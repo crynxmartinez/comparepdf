@@ -31,11 +31,16 @@ export async function parseFileToTables(file: File): Promise<ParsedTable[]> {
 
 async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    const workerUrl = new URL(
+      "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+      import.meta.url
+    );
+    pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl.href;
+  }
 
   const arrayBuffer = await file.arrayBuffer();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, disableWorker: true } as any).promise;
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
   type TextItem = { x: number; y: number; width: number; text: string };
 
