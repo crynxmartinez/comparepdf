@@ -7,18 +7,29 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Loader2, ArrowRightLeft, RotateCcw, Key, ChevronLeft, Plus, X } from "lucide-react";
+import { Loader2, ArrowRightLeft, RotateCcw, Plus, X } from "lucide-react";
 import { getFileType } from "@/lib/parsers";
-import { parseFileToTables, type ParsedTable } from "@/lib/structured-parser";
+import { parseFileToTables } from "@/lib/structured-parser";
 import { compareMultiFiles, generateId } from "@/lib/structured-differ";
 import { saveComparison, type ComparisonRecord } from "@/lib/db";
-import { cn } from "@/lib/utils";
 
-type Step = "upload" | "pick-key" | "result";
+type Step = "upload" | "result";
 
 interface FileSlot {
   file: File | null;
   label: string;
+}
+
+function autoDetectKeyColumn(headers: string[]): { index: number; name: string } {
+  const keyNames = ["item", "part", "part number", "part no", "sku", "code", "id", "name", "product", "material", "mark"];
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i].toLowerCase().trim();
+    if (keyNames.some((k) => h.includes(k))) {
+      return { index: i, name: headers[i] };
+    }
+  }
+  // Fallback: use first non-empty-looking column
+  return { index: 0, name: headers[0] ?? "Column 1" };
 }
 
 export function ComparePage() {
@@ -29,17 +40,10 @@ export function ComparePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("upload");
-
-  // Parsed data (after upload, before compare)
-  const [allTables, setAllTables] = useState<ParsedTable[][]>([]);
-  const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
-  const [previewRows, setPreviewRows] = useState<string[][]>([]);
-  const [keyColumnIndex, setKeyColumnIndex] = useState(0);
-
   const [result, setResult] = useState<ComparisonRecord | null>(null);
 
   const filledSlots = fileSlots.filter((s) => s.file !== null);
-  const canParse = filledSlots.length >= 2 && !loading;
+  const canCompare = filledSlots.length >= 2 && !loading;
 
   const addFileSlot = () => {
     if (fileSlots.length >= 6) return;
@@ -64,8 +68,8 @@ export function ComparePage() {
     setFileSlots(updated);
   };
 
-  // Step 1 → Step 2: Parse files and show column picker
-  const handleParseFiles = async () => {
+  // Upload → Parse → Auto-detect key → Compare → Results (all in one step)
+  const handleCompare = async () => {
     const files = fileSlots.filter((s) => s.file !== null);
     if (files.length < 2) return;
 
@@ -73,50 +77,18 @@ export function ComparePage() {
     setError(null);
 
     try {
-      const parsed = await Promise.all(
+      // Parse all files
+      const allTables = await Promise.all(
         files.map((s) => parseFileToTables(s.file!))
       );
 
-      setAllTables(parsed);
+      // Auto-detect key column from first file's headers
+      const headers = allTables[0]?.[0]?.headers ?? [];
+      const keyCol = autoDetectKeyColumn(headers);
 
-      // Get headers and preview rows from first file
-      const headers = parsed[0]?.[0]?.headers ?? [];
-      const rows = parsed[0]?.[0]?.rows?.slice(0, 5) ?? [];
-      setPreviewHeaders(headers);
-      setPreviewRows(rows);
-
-      // Auto-select best key column
-      const keyNames = ["item", "part", "part number", "part no", "sku", "code", "id", "name", "product", "material"];
-      let bestKey = 0;
-      for (let i = 0; i < headers.length; i++) {
-        const h = headers[i].toLowerCase().trim();
-        if (keyNames.some((k) => h.includes(k))) {
-          bestKey = i;
-          break;
-        }
-      }
-      setKeyColumnIndex(bestKey);
-      setStep("pick-key");
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "An error occurred while parsing files."
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Step 2 → Step 3: Run comparison with selected key column
-  const handleCompare = async () => {
-    if (allTables.length < 2) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const files = fileSlots.filter((s) => s.file !== null);
+      // Run comparison
       const fileType = getFileType(files[0].file!.name) ?? "unknown";
-      const { headers, rows, summary } = compareMultiFiles(allTables, keyColumnIndex);
+      const { headers: resultHeaders, rows, summary } = compareMultiFiles(allTables, keyCol.index);
 
       const record: ComparisonRecord = {
         id: generateId(),
@@ -124,8 +96,8 @@ export function ComparePage() {
         fileLabels: files.map((s) => s.label),
         fileType,
         date: new Date().toISOString(),
-        headers,
-        keyColumn: previewHeaders[keyColumnIndex] ?? "Column 1",
+        headers: resultHeaders,
+        keyColumn: keyCol.name,
         summary,
         rows,
       };
@@ -147,10 +119,6 @@ export function ComparePage() {
       { file: null, label: "File A" },
       { file: null, label: "File B" },
     ]);
-    setAllTables([]);
-    setPreviewHeaders([]);
-    setPreviewRows([]);
-    setKeyColumnIndex(0);
     setResult(null);
     setError(null);
     setStep("upload");
@@ -163,12 +131,11 @@ export function ComparePage() {
         <h1 className="text-2xl font-bold tracking-tight">New Comparison</h1>
         <p className="text-sm text-muted-foreground">
           {step === "upload" && "Upload 2 or more files to compare"}
-          {step === "pick-key" && "Select the key column to match rows across files"}
           {step === "result" && "Comparison results"}
         </p>
       </div>
 
-      {/* ─── Step 1: Upload ─── */}
+      {/* ─── Upload ─── */}
       {step === "upload" && (
         <>
           <div className="grid gap-4 md:grid-cols-2">
@@ -220,117 +187,19 @@ export function ComparePage() {
           <div className="flex justify-center">
             <Button
               size="lg"
-              disabled={!canParse}
-              onClick={handleParseFiles}
-              className="min-w-[200px]"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Parsing {filledSlots.length} files...
-                </>
-              ) : (
-                <>
-                  <ArrowRightLeft className="h-4 w-4 mr-2" />
-                  Next: Pick Key Column ({filledSlots.length} files)
-                </>
-              )}
-            </Button>
-          </div>
-        </>
-      )}
-
-      {/* ─── Step 2: Pick Key Column ─── */}
-      {step === "pick-key" && (
-        <>
-          <Card className="p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Key className="h-4 w-4 text-primary" />
-              <p className="text-sm font-semibold">Which column is the item name/identifier?</p>
-            </div>
-            <p className="text-xs text-muted-foreground mb-4">
-              This column will be used to match rows across all {allTables.length} files. Click a column header to select it.
-            </p>
-
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr>
-                    {previewHeaders.map((h, idx) => (
-                      <th
-                        key={idx}
-                        onClick={() => setKeyColumnIndex(idx)}
-                        className={cn(
-                          "px-4 py-3 text-left text-xs font-medium cursor-pointer transition-colors border-b",
-                          idx === keyColumnIndex
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-muted/50 text-muted-foreground hover:bg-muted"
-                        )}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          {idx === keyColumnIndex && <Key className="h-3 w-3" />}
-                          {h}
-                        </div>
-                        {idx === keyColumnIndex && (
-                          <span className="text-[10px] font-normal opacity-80">Key Column</span>
-                        )}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {previewRows.map((row, rowIdx) => (
-                    <tr key={rowIdx} className="hover:bg-muted/20">
-                      {row.map((cell, cellIdx) => (
-                        <td
-                          key={cellIdx}
-                          className={cn(
-                            "px-4 py-2 font-mono text-xs",
-                            cellIdx === keyColumnIndex && "bg-primary/5 font-semibold"
-                          )}
-                        >
-                          {cell || "—"}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {previewRows.length > 0 && (
-              <p className="text-xs text-muted-foreground mt-2">
-                Showing first {previewRows.length} rows from {fileSlots[0]?.label} as preview
-              </p>
-            )}
-          </Card>
-
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
-              {error}
-            </div>
-          )}
-
-          <div className="flex justify-center gap-3">
-            <Button variant="outline" onClick={() => setStep("upload")}>
-              <ChevronLeft className="h-4 w-4 mr-1" />
-              Back
-            </Button>
-            <Button
-              size="lg"
-              disabled={loading}
+              disabled={!canCompare}
               onClick={handleCompare}
               className="min-w-[200px]"
             >
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Comparing...
+                  Parsing & comparing {filledSlots.length} files...
                 </>
               ) : (
                 <>
                   <ArrowRightLeft className="h-4 w-4 mr-2" />
-                  Compare Using &quot;{previewHeaders[keyColumnIndex]}&quot;
+                  Compare {filledSlots.length} Files
                 </>
               )}
             </Button>
@@ -338,7 +207,7 @@ export function ComparePage() {
         </>
       )}
 
-      {/* ─── Step 3: Results ─── */}
+      {/* ─── Results ─── */}
       {step === "result" && result && (
         <>
           <div className="flex items-center justify-between">

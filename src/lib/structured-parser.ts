@@ -36,8 +36,9 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-  // Collect ALL text items across all pages with their positions
-  const allItems: { x: number; y: number; width: number; text: string; page: number }[] = [];
+  // Collect ALL text items across all pages
+  type TextItem = { x: number; y: number; width: number; text: string };
+  const allItems: TextItem[] = [];
   let yOffset = 0;
 
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -49,101 +50,117 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ti = item as any;
       if (!ti.str || !ti.str.trim()) continue;
-      const x = ti.transform[4];
-      const y = yOffset + (viewport.height - ti.transform[5]);
-      const width = ti.width ?? ti.str.length * 5;
-      allItems.push({ x, y, width, text: ti.str.trim(), page: i });
+      const x = Math.round(ti.transform[4]);
+      const y = Math.round(yOffset + (viewport.height - ti.transform[5]));
+      const width = Math.round(ti.width ?? ti.str.length * 5);
+      allItems.push({ x, y, width, text: ti.str.trim() });
     }
-
     yOffset += viewport.height + 20;
   }
 
   if (allItems.length === 0) return [{ section: "Document", headers: ["Content"], rows: [] }];
 
-  // Step 1: Discover column boundaries by clustering X positions
-  const columnBoundaries = discoverColumns(allItems);
+  // Step 1: Group text items into visual rows by Y proximity
+  const visualRows = groupIntoRows(allItems);
 
-  // Step 2: Group items into visual rows by Y proximity
-  const textRows = groupIntoRows(allItems);
+  // Step 2: For each visual row, sort items by X and join into a single line
+  const lines: { items: TextItem[]; text: string }[] = [];
+  for (const rowItems of visualRows) {
+    const sorted = rowItems.sort((a, b) => a.x - b.x);
+    // Build line text with tab-like separators based on X gaps
+    let lineText = "";
+    for (let i = 0; i < sorted.length; i++) {
+      if (i > 0) {
+        const gap = sorted[i].x - (sorted[i - 1].x + sorted[i - 1].width);
+        lineText += gap > 10 ? "\t" : " ";
+      }
+      lineText += sorted[i].text;
+    }
+    lines.push({ items: sorted, text: lineText.trim() });
+  }
 
-  // Step 3: Assign each item in a visual row to a column
-  const rawRows: string[][] = [];
-  for (const rowItems of textRows) {
-    const cells = assignToColumns(rowItems, columnBoundaries);
-    if (cells.some((c) => c.trim())) {
-      rawRows.push(cells);
+  // Step 3: Find the header row — look for a line with known header keywords
+  const HEADER_KEYWORDS = [
+    "line", "qty", "item", "description", "length", "weight", "price", "amount",
+    "unit", "total", "part", "mark", "quantity", "cost", "ship", "warehouse",
+    "sales", "order", "customer", "po", "terms", "id", "no", "color", "size",
+    "detail", "trim", "quan"
+  ];
+
+  let headerLineIdx = -1;
+  let bestHeaderScore = 0;
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    const words = lines[i].text.toLowerCase().split(/[\t\s]+/);
+    const score = words.filter((w) => HEADER_KEYWORDS.some((k) => w.includes(k))).length;
+    if (score > bestHeaderScore) {
+      bestHeaderScore = score;
+      headerLineIdx = i;
     }
   }
 
-  if (rawRows.length === 0) return [{ section: "Document", headers: ["Content"], rows: [] }];
+  // If no good header found, try first line
+  if (headerLineIdx < 0 || bestHeaderScore < 2) headerLineIdx = 0;
 
-  // Step 4: Detect header rows (may span multiple visual lines) and merge them
-  const { headers, dataStartIdx } = detectAndMergeHeaders(rawRows);
-  const dataLines = rawRows.slice(dataStartIdx).filter((r) => r.some((c) => c.trim()));
+  // Step 4: Use the header row's X positions to define column boundaries
+  const headerItems = lines[headerLineIdx].items;
 
-  // Step 5: Find the "Line" column (first column with sequential numbers)
-  const lineColIdx = findLineNumberColumn(headers, dataLines);
+  // Merge header items that are close together (multi-word headers like "Unit Price")
+  const headerGroups: { x: number; endX: number; text: string }[] = [];
+  for (const item of headerItems) {
+    const endX = item.x + item.width;
+    if (headerGroups.length > 0) {
+      const last = headerGroups[headerGroups.length - 1];
+      const gap = item.x - last.endX;
+      if (gap < 15) {
+        // Merge into previous group
+        last.text += " " + item.text;
+        last.endX = endX;
+        continue;
+      }
+    }
+    headerGroups.push({ x: item.x, endX, text: item.text });
+  }
 
-  // Step 6: Merge multi-line rows (continuation lines belong to previous primary row)
-  const mergedRows = mergeMultiLineRows(dataLines, lineColIdx, headers.length);
+  // Also check if there are multi-line headers (lines just above the header line with similar X positions)
+  // Merge text from lines above that align with header columns
+  for (let above = headerLineIdx - 1; above >= Math.max(0, headerLineIdx - 3); above--) {
+    const aboveItems = lines[above].items;
+    let merged = false;
+    for (const ai of aboveItems) {
+      // Find which header group this aligns with
+      for (const hg of headerGroups) {
+        if (Math.abs(ai.x - hg.x) < 20 || (ai.x >= hg.x - 5 && ai.x <= hg.endX + 5)) {
+          hg.text = ai.text + " " + hg.text;
+          merged = true;
+          break;
+        }
+      }
+    }
+    if (!merged) break; // Stop if this line doesn't align
+  }
 
-  // Step 7: Extract sub-fields from Description-like columns (Piece Mark, Punch, Bend A, Bend B, etc.)
+  const headers = headerGroups.map((g) => g.text.trim());
+  const colBoundaries = headerGroups.map((g) => g.x);
+
+  // Step 5: Parse all data lines (after header) into rows using column boundaries
+  const dataRows: string[][] = [];
+  for (let i = headerLineIdx + 1; i < lines.length; i++) {
+    const row = assignToColumns(lines[i].items, colBoundaries);
+    if (row.some((c) => c.trim())) {
+      dataRows.push(row);
+    }
+  }
+
+  if (dataRows.length === 0) return [{ section: "All Pages", headers, rows: [] }];
+
+  // Step 6: Find the "Line" column and merge multi-line rows
+  const lineColIdx = findLineNumberColumn(headers, dataRows);
+  const mergedRows = mergeMultiLineRows(dataRows, lineColIdx, headers.length);
+
+  // Step 7: Extract sub-fields
   const { headers: finalHeaders, rows: finalRows } = extractSubFields(headers, mergedRows);
 
   return [{ section: "All Pages", headers: finalHeaders, rows: finalRows }];
-}
-
-// Detect multi-line headers and merge them into a single header row.
-// PDF headers like "Customer PO #" or "Ship Via / 3rd Party" often span 2-3 visual lines.
-function detectAndMergeHeaders(rawRows: string[][]): { headers: string[]; dataStartIdx: number } {
-  if (rawRows.length === 0) return { headers: [], dataStartIdx: 0 };
-
-  const numCols = rawRows[0].length;
-
-  // A row is likely a "header row" if it has mostly non-numeric text and no row looks like data.
-  // Data rows typically have numbers (quantities, prices, line numbers).
-  function isLikelyHeaderRow(row: string[]): boolean {
-    let numericCount = 0;
-    let textCount = 0;
-    for (const cell of row) {
-      const val = cell.trim();
-      if (!val) continue;
-      // Pure numbers, prices, or measurements = data
-      if (/^[\d,.$]+$/.test(val) || /^\d+['"\-\/]\s*\d*/.test(val)) {
-        numericCount++;
-      } else {
-        textCount++;
-      }
-    }
-    // Header rows are mostly text, data rows have significant numeric content
-    return textCount > 0 && numericCount <= 1;
-  }
-
-  // Find how many initial rows are header rows (max 5 to be safe)
-  let headerEndIdx = 1; // At least the first row is a header
-  for (let i = 1; i < Math.min(rawRows.length, 5); i++) {
-    if (isLikelyHeaderRow(rawRows[i])) {
-      headerEndIdx = i + 1;
-    } else {
-      break;
-    }
-  }
-
-  // Merge all header rows into one
-  const merged: string[] = new Array(numCols).fill("");
-  for (let r = 0; r < headerEndIdx; r++) {
-    for (let c = 0; c < numCols; c++) {
-      const val = (rawRows[r][c] ?? "").trim();
-      if (val) {
-        merged[c] = merged[c] ? merged[c] + " " + val : val;
-      }
-    }
-  }
-
-  // Clean up and fallback for empty headers
-  const headers = merged.map((h, idx) => h.trim() || `Column ${idx + 1}`);
-
-  return { headers, dataStartIdx: headerEndIdx };
 }
 
 // Find the column that contains sequential line numbers (1, 2, 3...)
@@ -275,39 +292,6 @@ function extractSubFields(
   });
 
   return { headers: newHeaders, rows: newRows };
-}
-
-// Cluster X positions to find column boundaries
-function discoverColumns(items: { x: number; width: number }[]): number[] {
-  const xPositions = items.map((i) => Math.round(i.x));
-  xPositions.sort((a, b) => a - b);
-
-  const clusters: number[][] = [];
-  let currentCluster: number[] = [xPositions[0]];
-
-  for (let i = 1; i < xPositions.length; i++) {
-    if (xPositions[i] - xPositions[i - 1] <= 8) {
-      currentCluster.push(xPositions[i]);
-    } else {
-      clusters.push(currentCluster);
-      currentCluster = [xPositions[i]];
-    }
-  }
-  clusters.push(currentCluster);
-
-  const significantClusters = clusters.filter((c) => c.length >= 3);
-
-  if (significantClusters.length <= 1) {
-    const fallback = clusters.filter((c) => c.length >= 2);
-    if (fallback.length <= 1) {
-      return [Math.min(...xPositions)];
-    }
-    return fallback.map((c) => Math.round(c.reduce((a, b) => a + b, 0) / c.length));
-  }
-
-  return significantClusters.map((c) =>
-    Math.round(c.reduce((a, b) => a + b, 0) / c.length)
-  );
 }
 
 // Group items into rows by Y proximity
