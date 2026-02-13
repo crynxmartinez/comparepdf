@@ -69,7 +69,18 @@ export function ComparePage() {
       const rows = t1[0]?.rows?.slice(0, 5) ?? [];
       setPreviewHeaders(headers);
       setPreviewRows(rows);
-      setKeyColumnIndex(0);
+
+      // Auto-select best key column: prefer "Item", then "Name", then "Part", etc.
+      const keyNames = ["item", "part", "part number", "part no", "sku", "code", "id", "name", "product", "material"];
+      let bestKey = 0;
+      for (let i = 0; i < headers.length; i++) {
+        const h = headers[i].toLowerCase().trim();
+        if (keyNames.some((k) => h.includes(k))) {
+          bestKey = i;
+          break;
+        }
+      }
+      setKeyColumnIndex(bestKey);
       setStep("pick-key");
     } catch (err) {
       setError(
