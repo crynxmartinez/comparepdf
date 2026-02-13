@@ -119,6 +119,30 @@ export function exportAsHtml(record: ComparisonRecord): string {
 </html>`;
 }
 
+export async function downloadPdf(record: ComparisonRecord) {
+  const html = exportAsHtml(record);
+  // Dynamic import to avoid SSR issues
+  const html2pdf = (await import("html2pdf.js")).default;
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  document.body.appendChild(container);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (html2pdf() as any)
+    .set({
+      margin: [10, 10, 10, 10],
+      filename: `comparison-report-${record.id}.pdf`,
+      image: { type: "jpeg", quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: "mm", format: "a4", orientation: "landscape" },
+      pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+    })
+    .from(container)
+    .save();
+
+  document.body.removeChild(container);
+}
+
 export function downloadReport(record: ComparisonRecord) {
   const html = exportAsHtml(record);
   const blob = new Blob([html], { type: "text/html" });
