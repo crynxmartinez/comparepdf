@@ -108,17 +108,33 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   if (page1Lines.length === 0)
     return [{ section: "Document", headers: ["Content"], rows: [] }];
 
+  // DEBUG: Log first 15 lines to understand PDF structure
+  console.log("=== PDF PARSER DEBUG: First 15 lines ===");
+  for (let i = 0; i < Math.min(page1Lines.length, 15); i++) {
+    const words = page1Lines[i].text.toLowerCase().split(/[\t\s]+/);
+    const kwCount = words.filter((w) => HEADER_KEYWORDS.some((k) => w.includes(k))).length;
+    const ratio = words.length > 0 ? (kwCount / words.length).toFixed(2) : "0";
+    console.log(`  Line ${i}: [${page1Lines[i].items.length} items] score=${kwCount}/${words.length} ratio=${ratio} | "${page1Lines[i].text.substring(0, 120)}"`);
+  }
+
   let headerLineIdx = -1;
   let bestHeaderScore = 0;
   for (let i = 0; i < Math.min(page1Lines.length, 15); i++) {
     const words = page1Lines[i].text.toLowerCase().split(/[\t\s]+/);
-    const score = words.filter((w) => HEADER_KEYWORDS.some((k) => w.includes(k))).length;
+    const totalWords = words.length;
+    const kwCount = words.filter((w) => HEADER_KEYWORDS.some((k) => w.includes(k))).length;
+    // Use keyword RATIO not just count — a real header has mostly keywords
+    // "PH: (712)256-4242 Customer PO # Blair Highroad Project BL Line Qty" → low ratio
+    // "Line  Qty  Item  Description  Length  Weight  Unit Price  Amount" → high ratio
+    const ratio = totalWords > 0 ? kwCount / totalWords : 0;
+    const score = ratio >= 0.5 ? kwCount * 2 : kwCount * ratio;
     if (score > bestHeaderScore) {
       bestHeaderScore = score;
       headerLineIdx = i;
     }
   }
-  if (headerLineIdx < 0 || bestHeaderScore < 2) headerLineIdx = 0;
+  if (headerLineIdx < 0 || bestHeaderScore < 1) headerLineIdx = 0;
+  console.log(`  >>> Selected header line: ${headerLineIdx} | "${page1Lines[headerLineIdx]?.text.substring(0, 120)}"`);
 
   // Step 2: Build column definitions from the header row
   if (!page1Lines[headerLineIdx]) 
@@ -160,6 +176,9 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
 
   const headers = headerGroups.map((g) => g.text.trim());
   const colBoundaries = headerGroups.map((g) => g.x);
+
+  console.log("=== PARSED HEADERS ===", headers);
+  console.log("=== COL BOUNDARIES ===", colBoundaries);
 
   // Build a set of header text strings to detect repeated headers on other pages.
   // We match at the TEXT ITEM level (not line level) because repeated headers
