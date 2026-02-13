@@ -77,9 +77,9 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
 
   if (rawRows.length === 0) return [{ section: "Document", headers: ["Content"], rows: [] }];
 
-  // Step 4: Detect header row
-  const headers = rawRows[0].map((h, idx) => h || `Column ${idx + 1}`);
-  const dataLines = rawRows.slice(1).filter((r) => r.some((c) => c.trim()));
+  // Step 4: Detect header rows (may span multiple visual lines) and merge them
+  const { headers, dataStartIdx } = detectAndMergeHeaders(rawRows);
+  const dataLines = rawRows.slice(dataStartIdx).filter((r) => r.some((c) => c.trim()));
 
   // Step 5: Find the "Line" column (first column with sequential numbers)
   const lineColIdx = findLineNumberColumn(headers, dataLines);
@@ -91,6 +91,59 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   const { headers: finalHeaders, rows: finalRows } = extractSubFields(headers, mergedRows);
 
   return [{ section: "All Pages", headers: finalHeaders, rows: finalRows }];
+}
+
+// Detect multi-line headers and merge them into a single header row.
+// PDF headers like "Customer PO #" or "Ship Via / 3rd Party" often span 2-3 visual lines.
+function detectAndMergeHeaders(rawRows: string[][]): { headers: string[]; dataStartIdx: number } {
+  if (rawRows.length === 0) return { headers: [], dataStartIdx: 0 };
+
+  const numCols = rawRows[0].length;
+
+  // A row is likely a "header row" if it has mostly non-numeric text and no row looks like data.
+  // Data rows typically have numbers (quantities, prices, line numbers).
+  function isLikelyHeaderRow(row: string[]): boolean {
+    let numericCount = 0;
+    let textCount = 0;
+    for (const cell of row) {
+      const val = cell.trim();
+      if (!val) continue;
+      // Pure numbers, prices, or measurements = data
+      if (/^[\d,.$]+$/.test(val) || /^\d+['"\-\/]\s*\d*/.test(val)) {
+        numericCount++;
+      } else {
+        textCount++;
+      }
+    }
+    // Header rows are mostly text, data rows have significant numeric content
+    return textCount > 0 && numericCount <= 1;
+  }
+
+  // Find how many initial rows are header rows (max 5 to be safe)
+  let headerEndIdx = 1; // At least the first row is a header
+  for (let i = 1; i < Math.min(rawRows.length, 5); i++) {
+    if (isLikelyHeaderRow(rawRows[i])) {
+      headerEndIdx = i + 1;
+    } else {
+      break;
+    }
+  }
+
+  // Merge all header rows into one
+  const merged: string[] = new Array(numCols).fill("");
+  for (let r = 0; r < headerEndIdx; r++) {
+    for (let c = 0; c < numCols; c++) {
+      const val = (rawRows[r][c] ?? "").trim();
+      if (val) {
+        merged[c] = merged[c] ? merged[c] + " " + val : val;
+      }
+    }
+  }
+
+  // Clean up and fallback for empty headers
+  const headers = merged.map((h, idx) => h.trim() || `Column ${idx + 1}`);
+
+  return { headers, dataStartIdx: headerEndIdx };
 }
 
 // Find the column that contains sequential line numbers (1, 2, 3...)
