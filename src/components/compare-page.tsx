@@ -6,71 +6,86 @@ import { ReportViewer } from "@/components/report-viewer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Loader2, ArrowRightLeft, RotateCcw, Key, ChevronLeft } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Loader2, ArrowRightLeft, RotateCcw, Key, ChevronLeft, Plus, X } from "lucide-react";
 import { getFileType } from "@/lib/parsers";
 import { parseFileToTables, type ParsedTable } from "@/lib/structured-parser";
-import { compareTables, generateId } from "@/lib/structured-differ";
+import { compareMultiFiles, generateId } from "@/lib/structured-differ";
 import { saveComparison, type ComparisonRecord } from "@/lib/db";
 import { cn } from "@/lib/utils";
 
 type Step = "upload" | "pick-key" | "result";
 
+interface FileSlot {
+  file: File | null;
+  label: string;
+}
+
 export function ComparePage() {
-  const [file1, setFile1] = useState<File | null>(null);
-  const [file2, setFile2] = useState<File | null>(null);
+  const [fileSlots, setFileSlots] = useState<FileSlot[]>([
+    { file: null, label: "File A" },
+    { file: null, label: "File B" },
+  ]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("upload");
 
   // Parsed data (after upload, before compare)
-  const [tables1, setTables1] = useState<ParsedTable[] | null>(null);
-  const [tables2, setTables2] = useState<ParsedTable[] | null>(null);
+  const [allTables, setAllTables] = useState<ParsedTable[][]>([]);
   const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
   const [keyColumnIndex, setKeyColumnIndex] = useState(0);
 
   const [result, setResult] = useState<ComparisonRecord | null>(null);
 
-  const canParse = file1 && file2 && !loading;
+  const filledSlots = fileSlots.filter((s) => s.file !== null);
+  const canParse = filledSlots.length >= 2 && !loading;
+
+  const addFileSlot = () => {
+    if (fileSlots.length >= 6) return;
+    const letter = String.fromCharCode(65 + fileSlots.length);
+    setFileSlots([...fileSlots, { file: null, label: `File ${letter}` }]);
+  };
+
+  const removeFileSlot = (idx: number) => {
+    if (fileSlots.length <= 2) return;
+    setFileSlots(fileSlots.filter((_, i) => i !== idx));
+  };
+
+  const updateFile = (idx: number, file: File | null) => {
+    const updated = [...fileSlots];
+    updated[idx] = { ...updated[idx], file };
+    setFileSlots(updated);
+  };
+
+  const updateLabel = (idx: number, label: string) => {
+    const updated = [...fileSlots];
+    updated[idx] = { ...updated[idx], label };
+    setFileSlots(updated);
+  };
 
   // Step 1 → Step 2: Parse files and show column picker
   const handleParseFiles = async () => {
-    if (!file1 || !file2) return;
-
-    const type1 = getFileType(file1.name);
-    const type2 = getFileType(file2.name);
-
-    if (!type1 || !type2) {
-      setError("One or both files have unsupported file types.");
-      return;
-    }
-
-    if (type1 !== type2) {
-      setError(
-        `File types don't match: ${file1.name} (${type1}) vs ${file2.name} (${type2}). Please compare files of the same type.`
-      );
-      return;
-    }
+    const files = fileSlots.filter((s) => s.file !== null);
+    if (files.length < 2) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      const [t1, t2] = await Promise.all([
-        parseFileToTables(file1),
-        parseFileToTables(file2),
-      ]);
+      const parsed = await Promise.all(
+        files.map((s) => parseFileToTables(s.file!))
+      );
 
-      setTables1(t1);
-      setTables2(t2);
+      setAllTables(parsed);
 
-      // Get headers and a few preview rows from file 1
-      const headers = t1[0]?.headers ?? [];
-      const rows = t1[0]?.rows?.slice(0, 5) ?? [];
+      // Get headers and preview rows from first file
+      const headers = parsed[0]?.[0]?.headers ?? [];
+      const rows = parsed[0]?.[0]?.rows?.slice(0, 5) ?? [];
       setPreviewHeaders(headers);
       setPreviewRows(rows);
 
-      // Auto-select best key column: prefer "Item", then "Name", then "Part", etc.
+      // Auto-select best key column
       const keyNames = ["item", "part", "part number", "part no", "sku", "code", "id", "name", "product", "material"];
       let bestKey = 0;
       for (let i = 0; i < headers.length; i++) {
@@ -93,22 +108,24 @@ export function ComparePage() {
 
   // Step 2 → Step 3: Run comparison with selected key column
   const handleCompare = async () => {
-    if (!tables1 || !tables2 || !file1 || !file2) return;
+    if (allTables.length < 2) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      const type1 = getFileType(file1.name) ?? "unknown";
-      const { headers, rows, summary } = compareTables(tables1, tables2, keyColumnIndex);
+      const files = fileSlots.filter((s) => s.file !== null);
+      const fileType = getFileType(files[0].file!.name) ?? "unknown";
+      const { headers, rows, summary } = compareMultiFiles(allTables, keyColumnIndex);
 
       const record: ComparisonRecord = {
         id: generateId(),
-        fileName1: file1.name,
-        fileName2: file2.name,
-        fileType: type1,
+        fileNames: files.map((s) => s.file!.name),
+        fileLabels: files.map((s) => s.label),
+        fileType,
         date: new Date().toISOString(),
         headers,
+        keyColumn: previewHeaders[keyColumnIndex] ?? "Column 1",
         summary,
         rows,
       };
@@ -126,10 +143,11 @@ export function ComparePage() {
   };
 
   const handleReset = () => {
-    setFile1(null);
-    setFile2(null);
-    setTables1(null);
-    setTables2(null);
+    setFileSlots([
+      { file: null, label: "File A" },
+      { file: null, label: "File B" },
+    ]);
+    setAllTables([]);
     setPreviewHeaders([]);
     setPreviewRows([]);
     setKeyColumnIndex(0);
@@ -144,8 +162,8 @@ export function ComparePage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">New Comparison</h1>
         <p className="text-sm text-muted-foreground">
-          {step === "upload" && "Upload two files of the same type to compare"}
-          {step === "pick-key" && "Select the key column to match rows between files"}
+          {step === "upload" && "Upload 2 or more files to compare"}
+          {step === "pick-key" && "Select the key column to match rows across files"}
           {step === "result" && "Comparison results"}
         </p>
       </div>
@@ -154,37 +172,44 @@ export function ComparePage() {
       {step === "upload" && (
         <>
           <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">File 1 (Original)</span>
-                {file1 && (
-                  <Badge variant="secondary" className="text-xs">
-                    {getFileType(file1.name)?.toUpperCase()}
-                  </Badge>
-                )}
-              </div>
-              <FileUpload
-                label="Upload original file"
-                file={file1}
-                onFileSelect={setFile1}
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">File 2 (Modified)</span>
-                {file2 && (
-                  <Badge variant="secondary" className="text-xs">
-                    {getFileType(file2.name)?.toUpperCase()}
-                  </Badge>
-                )}
-              </div>
-              <FileUpload
-                label="Upload modified file"
-                file={file2}
-                onFileSelect={setFile2}
-              />
-            </div>
+            {fileSlots.map((slot, idx) => (
+              <Card key={idx} className="p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 flex-1">
+                    <Input
+                      value={slot.label}
+                      onChange={(e) => updateLabel(idx, e.target.value)}
+                      className="h-7 text-xs font-medium w-32"
+                    />
+                    {slot.file && (
+                      <Badge variant="secondary" className="text-xs">
+                        {getFileType(slot.file.name)?.toUpperCase()}
+                      </Badge>
+                    )}
+                  </div>
+                  {fileSlots.length > 2 && (
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeFileSlot(idx)}>
+                      <X className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+                <FileUpload
+                  label={`Upload ${slot.label}`}
+                  file={slot.file}
+                  onFileSelect={(f) => updateFile(idx, f)}
+                />
+              </Card>
+            ))}
           </div>
+
+          {fileSlots.length < 6 && (
+            <div className="flex justify-center">
+              <Button variant="outline" size="sm" onClick={addFileSlot}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add Another File
+              </Button>
+            </div>
+          )}
 
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
@@ -202,12 +227,12 @@ export function ComparePage() {
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Parsing files...
+                  Parsing {filledSlots.length} files...
                 </>
               ) : (
                 <>
                   <ArrowRightLeft className="h-4 w-4 mr-2" />
-                  Next: Pick Key Column
+                  Next: Pick Key Column ({filledSlots.length} files)
                 </>
               )}
             </Button>
@@ -224,7 +249,7 @@ export function ComparePage() {
               <p className="text-sm font-semibold">Which column is the item name/identifier?</p>
             </div>
             <p className="text-xs text-muted-foreground mb-4">
-              This column will be used to match rows between the two files. Click a column header to select it.
+              This column will be used to match rows across all {allTables.length} files. Click a column header to select it.
             </p>
 
             <div className="overflow-x-auto rounded-lg border">
@@ -275,7 +300,7 @@ export function ComparePage() {
 
             {previewRows.length > 0 && (
               <p className="text-xs text-muted-foreground mt-2">
-                Showing first {previewRows.length} rows from File 1 as preview
+                Showing first {previewRows.length} rows from {fileSlots[0]?.label} as preview
               </p>
             )}
           </Card>
@@ -317,13 +342,13 @@ export function ComparePage() {
       {step === "result" && result && (
         <>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Badge>{result.fileType.toUpperCase()}</Badge>
               <span className="text-sm text-muted-foreground">
-                {result.fileName1} vs {result.fileName2}
+                {result.fileNames.join(" vs ")}
               </span>
               <Badge variant="outline" className="text-xs">
-                Key: {previewHeaders[keyColumnIndex]}
+                Key: {result.keyColumn}
               </Badge>
             </div>
             <Button variant="outline" size="sm" onClick={handleReset}>

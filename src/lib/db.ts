@@ -2,31 +2,42 @@ import { openDB, DBSchema } from "idb";
 
 export interface ComparedCell {
   header: string;
-  value1?: string;
-  value2?: string;
+  /** values[i] = value from file i. Length matches fileNames.length */
+  values: (string | undefined)[];
   changed: boolean;
 }
 
 export interface ComparedRow {
-  status: "identical" | "modified" | "added" | "removed";
-  rowIndex: number;
+  /** "identical" = same in all files, "modified" = exists in 2+ files with differences */
+  /** "missing" = missing from one or more files (but present in at least one) */
+  status: "identical" | "modified" | "missing";
+  /** Key column value for this row */
+  keyValue: string;
+  /** Which file indices have this row (e.g., [0,1] = in files A & B but not C) */
+  presentIn: number[];
+  /** Which file indices are missing this row */
+  missingFrom: number[];
   cells: ComparedCell[];
 }
 
 export interface ComparisonRecord {
   id: string;
-  fileName1: string;
-  fileName2: string;
+  /** Ordered list of file names */
+  fileNames: string[];
+  /** Optional user-given labels (e.g., "Quicken SO", "Shipper") */
+  fileLabels: string[];
   fileType: string;
   date: string;
   headers: string[];
+  keyColumn: string;
   summary: {
-    totalRows: number;
+    totalItems: number;
     identical: number;
     modified: number;
-    added: number;
-    removed: number;
+    missing: number;
     matchScore: number;
+    /** Per-file: how many items are missing from each file */
+    missingPerFile: number[];
   };
   rows: ComparedRow[];
 }
@@ -40,13 +51,15 @@ interface CompareDB extends DBSchema {
 }
 
 const DB_NAME = "comparepdf-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export async function getDB() {
   return openDB<CompareDB>(DB_NAME, DB_VERSION, {
     upgrade(db) {
-      const store = db.createObjectStore("comparisons", { keyPath: "id" });
-      store.createIndex("by-date", "date");
+      if (!db.objectStoreNames.contains("comparisons")) {
+        const store = db.createObjectStore("comparisons", { keyPath: "id" });
+        store.createIndex("by-date", "date");
+      }
     },
   });
 }

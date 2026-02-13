@@ -76,7 +76,7 @@ export default function HistoryPage() {
               Comparison Details
             </h1>
             <p className="text-sm text-muted-foreground">
-              {selected.fileName1} vs {selected.fileName2}
+              {selected.fileNames.join(" vs ")}
             </p>
           </div>
           <Button variant="outline" onClick={() => setSelected(null)}>
@@ -129,7 +129,7 @@ export default function HistoryPage() {
                   {getTypeIcon(record.fileType)}
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">
-                      {record.fileName1} vs {record.fileName2}
+                      {record.fileNames.join(" vs ")}
                     </p>
                     <div className="flex items-center gap-2 mt-1">
                       <Badge variant="secondary" className="text-xs">
