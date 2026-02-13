@@ -31,10 +31,11 @@ export async function parseFileToTables(file: File): Promise<ParsedTable[]> {
 
 async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "";
 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, disableWorker: true } as any).promise;
 
   type TextItem = { x: number; y: number; width: number; text: string };
 
@@ -89,7 +90,18 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
     "detail", "trim", "quan"
   ];
 
-  const page1Lines = buildLines(pageItemSets[0]);
+  // Find the first page that actually has content
+  let page1Lines: { items: TextItem[]; text: string }[] = [];
+  for (let p = 0; p < pageItemSets.length; p++) {
+    const lines = buildLines(pageItemSets[p]);
+    if (lines.length > 0) {
+      page1Lines = lines;
+      break;
+    }
+  }
+
+  if (page1Lines.length === 0)
+    return [{ section: "Document", headers: ["Content"], rows: [] }];
 
   let headerLineIdx = -1;
   let bestHeaderScore = 0;
@@ -104,6 +116,9 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   if (headerLineIdx < 0 || bestHeaderScore < 2) headerLineIdx = 0;
 
   // Step 2: Build column definitions from the header row
+  if (!page1Lines[headerLineIdx]) 
+    return [{ section: "Document", headers: ["Content"], rows: [] }];
+
   const headerItems = page1Lines[headerLineIdx].items;
 
   // Merge header items that are close together (multi-word headers like "Unit Price")
