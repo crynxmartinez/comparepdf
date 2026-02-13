@@ -20,7 +20,7 @@ import {
   clearAllComparisons,
   type ComparisonRecord,
 } from "@/lib/db";
-import { downloadReport, downloadCsv } from "@/lib/export";
+import { downloadReport } from "@/lib/export";
 import { ReportViewer } from "@/components/report-viewer";
 
 function getTypeIcon(fileType: string) {

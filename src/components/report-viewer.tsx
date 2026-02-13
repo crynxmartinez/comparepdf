@@ -15,7 +15,7 @@ import {
   FileQuestion,
 } from "lucide-react";
 import type { ComparisonRecord, ComparedRow } from "@/lib/db";
-import { downloadReport, downloadCsv, downloadPdf, downloadExcel } from "@/lib/export";
+import { downloadReport } from "@/lib/export";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -90,21 +90,9 @@ export function ReportViewer({ record }: ReportViewerProps) {
             ))}
           </div>
           <div className="flex gap-2 ml-4 shrink-0">
-            <Button variant="outline" size="sm" onClick={() => downloadPdf(record)}>
-              <FileDown className="h-4 w-4 mr-1" />
-              Export PDF
-            </Button>
             <Button variant="outline" size="sm" onClick={() => downloadReport(record)}>
               <Download className="h-4 w-4 mr-1" />
               Export HTML
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => downloadExcel(record)}>
-              <FileDown className="h-4 w-4 mr-1" />
-              Export Excel
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => downloadCsv(record)}>
-              <FileDown className="h-4 w-4 mr-1" />
-              Export CSV
             </Button>
           </div>
         </div>

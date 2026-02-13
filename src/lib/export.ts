@@ -2,12 +2,6 @@ import type { ComparisonRecord, ComparedRow } from "./db";
 
 // ─── Shared helpers ───
 
-function getLabels(record: ComparisonRecord): string[] {
-  return record.fileLabels.length > 0
-    ? record.fileLabels
-    : record.fileNames.map((_, i) => `File ${String.fromCharCode(65 + i)}`);
-}
-
 function getChangedCells(row: ComparedRow) {
   return row.cells.filter((c) => {
     const vals = c.values.filter((v) => v !== undefined) as string[];
@@ -17,10 +11,6 @@ function getChangedCells(row: ComparedRow) {
 
 function esc(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function escapeCsv(str: string): string {
-  return str.replace(/"/g, '""');
 }
 
 // ─── HTML Export (used by both HTML download and PDF print) ───
@@ -181,32 +171,6 @@ export function exportAsHtml(record: ComparisonRecord): string {
 </html>`;
 }
 
-// ─── PDF Export (print dialog → Save as PDF) ───
-
-export function downloadPdf(record: ComparisonRecord) {
-  const html = exportAsHtml(record);
-  const iframe = document.createElement("iframe");
-  iframe.style.position = "fixed";
-  iframe.style.left = "-9999px";
-  iframe.style.width = "1200px";
-  iframe.style.height = "800px";
-  document.body.appendChild(iframe);
-
-  const doc = iframe.contentDocument ?? iframe.contentWindow?.document;
-  if (!doc) { document.body.removeChild(iframe); return; }
-
-  doc.open();
-  doc.write(html);
-  doc.close();
-
-  iframe.onload = () => {
-    setTimeout(() => {
-      iframe.contentWindow?.print();
-      setTimeout(() => { document.body.removeChild(iframe); }, 1000);
-    }, 500);
-  };
-}
-
 // ─── HTML Download ───
 
 export function downloadReport(record: ComparisonRecord) {
@@ -222,160 +186,3 @@ export function downloadReport(record: ComparisonRecord) {
   URL.revokeObjectURL(url);
 }
 
-// ─── CSV Export (matches on-screen layout) ───
-
-export function downloadCsv(record: ComparisonRecord) {
-  const { rows, fileNames } = record;
-  const labels = getLabels(record);
-
-  const modified = rows.filter((r) => r.status === "modified");
-  const missing = rows.filter((r) => r.status === "missing");
-  const identical = rows.filter((r) => r.status === "identical");
-
-  const csvLines: string[] = [];
-
-  // Discrepancies sheet
-  if (modified.length > 0) {
-    csvLines.push(`"--- DISCREPANCIES (${modified.length} items) ---"`);
-    csvLines.push(["Item", "Field", ...labels].map((h) => `"${escapeCsv(h)}"`).join(","));
-    let csvLastKey = "";
-    for (const row of modified) {
-      const changed = getChangedCells(row);
-      const isNew = row.keyValue !== csvLastKey;
-      csvLastKey = row.keyValue;
-      for (let ci = 0; ci < changed.length; ci++) {
-        const cell = changed[ci];
-        const vals = cell.values.map((v) => `"${escapeCsv(v ?? "")}"`);
-        const itemCol = ci === 0 && isNew ? `"${escapeCsv(row.keyValue)}"` : `""`;
-        csvLines.push(`${itemCol},"${escapeCsv(cell.header)}",${vals.join(",")}`);
-      }
-    }
-    csvLines.push("");
-  }
-
-  // Missing
-  for (let f = 0; f < fileNames.length; f++) {
-    const missingFromF = missing.filter((r) => r.missingFrom.includes(f));
-    if (missingFromF.length === 0) continue;
-    csvLines.push(`"--- MISSING FROM ${labels[f].toUpperCase()} (${missingFromF.length}) ---"`);
-    csvLines.push('"Item","Found In","Details"');
-    for (const row of missingFromF) {
-      const foundIn = row.presentIn.map((i) => labels[i]).join("; ");
-      const details = row.cells.filter((c) => c.values.some((v) => v)).slice(0, 4)
-        .map((c) => `${c.header}: ${c.values.find((v) => v)}`).join(" | ");
-      csvLines.push(`"${escapeCsv(row.keyValue)}","${escapeCsv(foundIn)}","${escapeCsv(details)}"`);
-    }
-    csvLines.push("");
-  }
-
-  // Matching
-  if (identical.length > 0) {
-    csvLines.push(`"--- MATCHING (${identical.length}) ---"`);
-    csvLines.push(["#", ...record.headers].map((h) => `"${escapeCsv(h)}"`).join(","));
-    for (let i = 0; i < identical.length; i++) {
-      const row = identical[i];
-      const cells = row.cells.map((c) => `"${escapeCsv(c.values.find((v) => v) ?? "")}"`);
-      csvLines.push(`"${i + 1}",${cells.join(",")}`);
-    }
-  }
-
-  const csv = csvLines.join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `comparison-report-${record.id}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-// ─── Excel Export (matches on-screen layout with colored sheets) ───
-
-export async function downloadExcel(record: ComparisonRecord) {
-  const XLSX = await import("xlsx");
-  const { rows, headers, fileNames } = record;
-  const labels = getLabels(record);
-
-  const modified = rows.filter((r) => r.status === "modified");
-  const missing = rows.filter((r) => r.status === "missing");
-  const identical = rows.filter((r) => r.status === "identical");
-
-  const wb = XLSX.utils.book_new();
-
-  // Summary sheet
-  const summaryData = [
-    ["Comparison Report"],
-    ["Date", new Date(record.date).toLocaleString()],
-    ["File Type", record.fileType.toUpperCase()],
-    ["Key Column", record.keyColumn],
-    [],
-    ["Files:"],
-    ...fileNames.map((name, i) => [labels[i], name, record.summary.missingPerFile[i] > 0 ? `${record.summary.missingPerFile[i]} missing` : ""]),
-    [],
-    ["Match Score", `${record.summary.matchScore}%`],
-    ["Matching", record.summary.identical],
-    ["Discrepancies", record.summary.modified],
-    ["Missing", record.summary.missing],
-    ["Total Items", record.summary.totalItems],
-  ];
-  const summaryWs = XLSX.utils.aoa_to_sheet(summaryData);
-  XLSX.utils.book_append_sheet(wb, summaryWs, "Summary");
-
-  // Discrepancies sheet — Item | Field | File A | File B ...
-  if (modified.length > 0) {
-    const discData: (string | number)[][] = [["Item", "Field", ...labels]];
-    let xlLastKey = "";
-    for (const row of modified) {
-      const changed = getChangedCells(row);
-      const isNew = row.keyValue !== xlLastKey;
-      xlLastKey = row.keyValue;
-      for (let ci = 0; ci < changed.length; ci++) {
-        const cell = changed[ci];
-        const itemCol = ci === 0 && isNew ? row.keyValue : "";
-        discData.push([itemCol, cell.header, ...cell.values.map((v) => v ?? "")]);
-      }
-    }
-    const discWs = XLSX.utils.aoa_to_sheet(discData);
-    XLSX.utils.book_append_sheet(wb, discWs, "Discrepancies");
-  }
-
-  // Missing sheets — one per file
-  for (let f = 0; f < fileNames.length; f++) {
-    const missingFromF = missing.filter((r) => r.missingFrom.includes(f));
-    if (missingFromF.length === 0) continue;
-    const missData: string[][] = [["Item", "Found In", "Details"]];
-    for (const row of missingFromF) {
-      const foundIn = row.presentIn.map((i) => labels[i]).join(", ");
-      const details = row.cells.filter((c) => c.values.some((v) => v)).slice(0, 4)
-        .map((c) => `${c.header}: ${c.values.find((v) => v)}`).join(" | ");
-      missData.push([row.keyValue, foundIn, details]);
-    }
-    const sheetName = `Missing ${labels[f]}`.substring(0, 31);
-    const missWs = XLSX.utils.aoa_to_sheet(missData);
-    XLSX.utils.book_append_sheet(wb, missWs, sheetName);
-  }
-
-  // Matching sheet — # | all headers
-  if (identical.length > 0) {
-    const matchData: (string | number)[][] = [["#", ...headers]];
-    for (let i = 0; i < identical.length; i++) {
-      const row = identical[i];
-      matchData.push([i + 1, ...row.cells.map((c) => c.values.find((v) => v) ?? "")]);
-    }
-    const matchWs = XLSX.utils.aoa_to_sheet(matchData);
-    XLSX.utils.book_append_sheet(wb, matchWs, "Matching");
-  }
-
-  const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `comparison-report-${record.id}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
