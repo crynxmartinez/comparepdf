@@ -142,36 +142,31 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
 
   const headerItems = page1Lines[headerLineIdx].items;
 
-  // Merge header items that are close together (multi-word headers like "Unit Price")
+  // DEBUG: Log header items with X positions
+  console.log("=== HEADER ITEMS ===");
+  for (let i = 0; i < headerItems.length; i++) {
+    const item = headerItems[i];
+    const prevEnd = i > 0 ? headerItems[i-1].x + headerItems[i-1].width : 0;
+    const gap = i > 0 ? item.x - prevEnd : 0;
+    console.log(`  [${i}] x=${item.x} w=${item.width} gap=${gap} "${item.text}"`);
+  }
+
+  // Merge header items that are very close (multi-word headers like "Unit Price")
+  // Use a small gap threshold to avoid merging separate columns
   const headerGroups: { x: number; endX: number; text: string }[] = [];
   for (const item of headerItems) {
     const endX = item.x + item.width;
     if (headerGroups.length > 0) {
       const last = headerGroups[headerGroups.length - 1];
       const gap = item.x - last.endX;
-      if (gap < 15) {
+      if (gap < 5) {
+        // Very close — merge (e.g., "Unit" + "Price")
         last.text += " " + item.text;
         last.endX = endX;
         continue;
       }
     }
     headerGroups.push({ x: item.x, endX, text: item.text });
-  }
-
-  // Merge multi-line headers from lines above
-  for (let above = headerLineIdx - 1; above >= Math.max(0, headerLineIdx - 3); above--) {
-    const aboveItems = page1Lines[above].items;
-    let merged = false;
-    for (const ai of aboveItems) {
-      for (const hg of headerGroups) {
-        if (Math.abs(ai.x - hg.x) < 20 || (ai.x >= hg.x - 5 && ai.x <= hg.endX + 5)) {
-          hg.text = ai.text + " " + hg.text;
-          merged = true;
-          break;
-        }
-      }
-    }
-    if (!merged) break;
   }
 
   const headers = headerGroups.map((g) => g.text.trim());
