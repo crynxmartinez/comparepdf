@@ -84,7 +84,7 @@ export default function HistoryPage() {
               Comparison Details
             </h1>
             <p className="text-sm text-muted-foreground">
-              {selected.fileNames.join(" vs ")}
+              {(selected.fileNames ?? []).join(" vs ")}
             </p>
           </div>
           <Button variant="outline" onClick={() => setSelected(null)}>
@@ -143,21 +143,21 @@ export default function HistoryPage() {
                   {getTypeIcon(record.fileType)}
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">
-                      {record.fileNames.join(" vs ")}
+                      {(record.fileNames ?? []).join(" vs ")}
                     </p>
                     <div className="flex items-center gap-2 mt-1">
                       <Badge variant="secondary" className="text-xs">
-                        {record.fileType.toUpperCase()}
+                        {(record.fileType ?? "unknown").toUpperCase()}
                       </Badge>
                       <span className="text-xs text-muted-foreground">
                         {new Date(record.date).toLocaleDateString()}{" "}
                         {new Date(record.date).toLocaleTimeString()}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {record.summary.matchScore}% match
+                        {record.summary?.matchScore ?? 0}% match
                       </span>
                       <span className="text-xs text-amber-600">
-                        {record.summary.modified} different
+                        {record.summary?.modified ?? 0} different
                       </span>
                     </div>
                   </div>
