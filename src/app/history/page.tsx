@@ -143,13 +143,7 @@ export default function HistoryPage() {
                         {record.summary.matchScore}% match
                       </span>
                       <span className="text-xs text-amber-600">
-                        ~{record.summary.modified}
-                      </span>
-                      <span className="text-xs text-green-600">
-                        +{record.summary.added}
-                      </span>
-                      <span className="text-xs text-red-600">
-                        -{record.summary.removed}
+                        {record.summary.modified} different
                       </span>
                     </div>
                   </div>

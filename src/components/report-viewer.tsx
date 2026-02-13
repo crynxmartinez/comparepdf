@@ -53,8 +53,8 @@ export function ReportViewer({ record }: ReportViewerProps) {
       {/* Section: Differences (Modified) */}
       {modified.length > 0 && (
         <ReportSection
-          title="Differences"
-          subtitle={`${modified.length} row${modified.length !== 1 ? "s" : ""} with changes`}
+          title="Different"
+          subtitle={`${modified.length} row${modified.length !== 1 ? "s" : ""} with different values`}
           icon={<AlertCircle className="h-5 w-5 text-amber-500" />}
           badgeColor="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
           badgeText={`${modified.length}`}
@@ -95,8 +95,8 @@ export function ReportViewer({ record }: ReportViewerProps) {
       {/* Section: Matching Data */}
       {identical.length > 0 && (
         <ReportSection
-          title="Matching Data"
-          subtitle={`${identical.length} row${identical.length !== 1 ? "s" : ""} are identical in both files`}
+          title="Matching"
+          subtitle={`${identical.length} row${identical.length !== 1 ? "s" : ""} are the same in both files`}
           icon={<CheckCircle2 className="h-5 w-5 text-green-500" />}
           badgeColor="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
           badgeText={`${identical.length}`}
@@ -152,25 +152,25 @@ function SummaryDashboard({ record }: { record: ComparisonRecord }) {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-3">
           <StatBadge
-            label="Identical"
+            label="Matching"
             count={summary.identical}
             icon={<CheckCircle2 className="h-4 w-4" />}
             color="text-green-600"
           />
           <StatBadge
-            label="Modified"
+            label="Different"
             count={summary.modified}
             icon={<AlertCircle className="h-4 w-4" />}
             color="text-amber-600"
           />
           <StatBadge
-            label="Added"
+            label="Only in File 2"
             count={summary.added}
             icon={<PlusCircle className="h-4 w-4" />}
             color="text-blue-600"
           />
           <StatBadge
-            label="Removed"
+            label="Only in File 1"
             count={summary.removed}
             icon={<MinusCircle className="h-4 w-4" />}
             color="text-red-600"
@@ -290,7 +290,7 @@ function ComparisonTable({
   showIdentical?: boolean;
 }) {
   return (
-    <ScrollArea className="max-h-[500px]">
+    <div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 sticky top-0">
@@ -344,7 +344,7 @@ function ComparisonTable({
           </tbody>
         </table>
       </div>
-    </ScrollArea>
+    </div>
   );
 }
 
