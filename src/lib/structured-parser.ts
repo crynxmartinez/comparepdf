@@ -180,41 +180,23 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   console.log("=== PARSED HEADERS ===", headers);
   console.log("=== COL BOUNDARIES ===", colBoundaries);
 
-  // Build a set of header text strings to detect repeated headers on other pages.
-  // We match at the TEXT ITEM level (not line level) because repeated headers
-  // can end up on the same Y coordinate as data items and get merged into one line.
-  const headerTextSet = new Set<string>();
-  // Collect all text items from the header line AND lines above it (the header block)
-  for (let h = Math.max(0, headerLineIdx - 3); h <= headerLineIdx; h++) {
-    if (!page1Lines[h]) continue;
-    for (const item of page1Lines[h].items) {
-      const t = item.text.trim().toLowerCase();
-      if (t.length > 1) headerTextSet.add(t);
-    }
-  }
-  // Also add common page header items (phone numbers, company names that repeat)
-  // by collecting all text from lines BEFORE the header block on page 1
-  for (let h = 0; h < Math.max(0, headerLineIdx - 3); h++) {
-    if (!page1Lines[h]) continue;
-    for (const item of page1Lines[h].items) {
-      const t = item.text.trim().toLowerCase();
-      if (t.length > 1) headerTextSet.add(t);
-    }
-  }
+  // Get the Y position of the header row — on pages 2+, everything at or above
+  // this Y is repeated header/page info and should be stripped.
+  // Use the max Y of items in the header line as the cutoff.
+  const headerY = Math.max(...page1Lines[headerLineIdx].items.map((i) => i.y));
+  console.log("=== HEADER Y CUTOFF ===", headerY);
 
   // Step 3: Collect data rows from all pages
-  // For pages 2+, strip text items that match the header/page-header text
+  // For pages 2+, strip all items whose Y ≤ headerY (the repeated header block)
   const dataRows: string[][] = [];
 
   for (let p = 0; p < pageItemSets.length; p++) {
     let pageItems = pageItemSets[p];
 
     if (p > 0) {
-      // Remove text items that match header text from page 1
-      pageItems = pageItems.filter((item) => {
-        const t = item.text.trim().toLowerCase();
-        return !headerTextSet.has(t);
-      });
+      // Remove all items in the header zone (Y ≤ headerY)
+      // The repeated header block on each page occupies the same Y range
+      pageItems = pageItems.filter((item) => item.y > headerY);
     }
 
     const lines = p === 0 ? page1Lines : buildLines(pageItems);
