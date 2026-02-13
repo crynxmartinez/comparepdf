@@ -35,117 +35,144 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
 
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const tables: ParsedTable[] = [];
+
+  // Collect ALL text items across all pages with their positions
+  const allItems: { x: number; y: number; width: number; text: string; page: number }[] = [];
+  let yOffset = 0;
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
-
-    // Group text items by Y position to reconstruct rows
-    const itemsByY: Map<number, { x: number; text: string }[]> = new Map();
+    const viewport = page.getViewport({ scale: 1 });
 
     for (const item of textContent.items) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ti = item as any;
       if (!ti.str || !ti.str.trim()) continue;
-      // Round Y to group items on the same line (within 2px tolerance)
-      const y = Math.round(ti.transform[5] / 2) * 2;
       const x = ti.transform[4];
-      if (!itemsByY.has(y)) itemsByY.set(y, []);
-      itemsByY.get(y)!.push({ x, text: ti.str.trim() });
+      // Flip Y (PDF is bottom-up) and add page offset so pages stack vertically
+      const y = yOffset + (viewport.height - ti.transform[5]);
+      const width = ti.width ?? ti.str.length * 5;
+      allItems.push({ x, y, width, text: ti.str.trim(), page: i });
     }
 
-    // Sort by Y descending (PDF coords are bottom-up), then X ascending
-    const sortedYs = Array.from(itemsByY.keys()).sort((a, b) => b - a);
-    const rows: string[][] = [];
+    yOffset += viewport.height + 20; // gap between pages
+  }
 
-    for (const y of sortedYs) {
-      const items = itemsByY.get(y)!.sort((a, b) => a.x - b.x);
-      // Detect columns by X-position gaps
-      const cells = detectColumns(items);
-      if (cells.length > 0 && cells.some((c) => c.trim())) {
-        rows.push(cells);
+  if (allItems.length === 0) return [{ section: "Document", headers: ["Content"], rows: [] }];
+
+  // Step 1: Discover column boundaries by clustering X positions
+  const columnBoundaries = discoverColumns(allItems);
+
+  // Step 2: Group items into rows by Y proximity
+  const textRows = groupIntoRows(allItems);
+
+  // Step 3: Assign each item in a row to a column
+  const tableRows: string[][] = [];
+  for (const rowItems of textRows) {
+    const cells = assignToColumns(rowItems, columnBoundaries);
+    if (cells.some((c) => c.trim())) {
+      tableRows.push(cells);
+    }
+  }
+
+  if (tableRows.length === 0) return [{ section: "Document", headers: ["Content"], rows: [] }];
+
+  // Step 4: Detect header row and split
+  const headers = tableRows[0].map((h, idx) => h || `Column ${idx + 1}`);
+  const dataRows = tableRows.slice(1).filter((r) => r.some((c) => c.trim()));
+
+  return [{ section: "All Pages", headers, rows: dataRows }];
+}
+
+// Cluster X positions to find column boundaries
+function discoverColumns(items: { x: number; width: number }[]): number[] {
+  // Collect all unique X start positions, rounded
+  const xPositions = items.map((i) => Math.round(i.x));
+  xPositions.sort((a, b) => a - b);
+
+  // Cluster X positions that are within 8px of each other
+  const clusters: number[][] = [];
+  let currentCluster: number[] = [xPositions[0]];
+
+  for (let i = 1; i < xPositions.length; i++) {
+    if (xPositions[i] - xPositions[i - 1] <= 8) {
+      currentCluster.push(xPositions[i]);
+    } else {
+      clusters.push(currentCluster);
+      currentCluster = [xPositions[i]];
+    }
+  }
+  clusters.push(currentCluster);
+
+  // Only keep clusters that appear frequently (at least 3 times = likely a column)
+  const significantClusters = clusters.filter((c) => c.length >= 3);
+
+  if (significantClusters.length <= 1) {
+    // Fallback: use all clusters with at least 2 items
+    const fallback = clusters.filter((c) => c.length >= 2);
+    if (fallback.length <= 1) {
+      return [Math.min(...xPositions)];
+    }
+    return fallback.map((c) => Math.round(c.reduce((a, b) => a + b, 0) / c.length));
+  }
+
+  // Return the average X of each cluster as column start positions
+  return significantClusters.map((c) =>
+    Math.round(c.reduce((a, b) => a + b, 0) / c.length)
+  );
+}
+
+// Group items into rows by Y proximity
+function groupIntoRows(
+  items: { x: number; y: number; width: number; text: string }[]
+): { x: number; y: number; width: number; text: string }[][] {
+  // Sort by Y then X
+  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x);
+
+  const rows: { x: number; y: number; width: number; text: string }[][] = [];
+  let currentRow: typeof sorted = [sorted[0]];
+  let currentY = sorted[0].y;
+
+  for (let i = 1; i < sorted.length; i++) {
+    // Items within 4px vertically are on the same row
+    if (Math.abs(sorted[i].y - currentY) <= 4) {
+      currentRow.push(sorted[i]);
+    } else {
+      rows.push(currentRow);
+      currentRow = [sorted[i]];
+      currentY = sorted[i].y;
+    }
+  }
+  rows.push(currentRow);
+
+  return rows;
+}
+
+// Assign row items to the nearest column
+function assignToColumns(
+  rowItems: { x: number; text: string }[],
+  columnBoundaries: number[]
+): string[] {
+  const cells: string[] = new Array(columnBoundaries.length).fill("");
+
+  for (const item of rowItems) {
+    // Find the closest column boundary
+    let bestCol = 0;
+    let bestDist = Math.abs(item.x - columnBoundaries[0]);
+    for (let c = 1; c < columnBoundaries.length; c++) {
+      const dist = Math.abs(item.x - columnBoundaries[c]);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestCol = c;
       }
     }
-
-    if (rows.length > 0) {
-      // Try to detect header row (first row or row with common header keywords)
-      const maxCols = Math.max(...rows.map((r) => r.length));
-      const normalizedRows = rows.map((r) => {
-        while (r.length < maxCols) r.push("");
-        return r;
-      });
-
-      const headers = normalizedRows[0].map(
-        (h, idx) => h || `Column ${idx + 1}`
-      );
-      const dataRows = normalizedRows.slice(1);
-
-      tables.push({
-        section: `Page ${i}`,
-        headers,
-        rows: dataRows,
-      });
-    }
+    cells[bestCol] = cells[bestCol]
+      ? cells[bestCol] + " " + item.text
+      : item.text;
   }
 
-  // If no structured tables found, fall back to line-by-line
-  if (tables.length === 0) {
-    return fallbackPdfParse(file);
-  }
-
-  return tables;
-}
-
-function detectColumns(items: { x: number; text: string }[]): string[] {
-  if (items.length <= 1) return items.map((i) => i.text);
-
-  // Detect gaps between items to split into columns
-  const cells: string[] = [];
-  let currentCell = items[0].text;
-  const GAP_THRESHOLD = 15; // pixels gap to consider a new column
-
-  for (let i = 1; i < items.length; i++) {
-    const gap = items[i].x - (items[i - 1].x + items[i - 1].text.length * 4);
-    if (gap > GAP_THRESHOLD) {
-      cells.push(currentCell.trim());
-      currentCell = items[i].text;
-    } else {
-      currentCell += " " + items[i].text;
-    }
-  }
-  cells.push(currentCell.trim());
   return cells;
-}
-
-async function fallbackPdfParse(file: File): Promise<ParsedTable[]> {
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const rows: string[][] = [];
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((item: any) => ("str" in item ? item.str : ""))
-      .join(" ");
-    const lines = pageText.split(/\s{2,}|\n/).filter((l: string) => l.trim());
-    for (const line of lines) {
-      rows.push([line.trim()]);
-    }
-  }
-
-  return [
-    {
-      section: "Document",
-      headers: ["Content"],
-      rows,
-    },
-  ];
 }
 
 async function parseExcelToTables(file: File): Promise<ParsedTable[]> {

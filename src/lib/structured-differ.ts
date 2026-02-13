@@ -1,25 +1,27 @@
 import type { ComparedRow, ComparedCell, ComparisonRecord } from "./db";
 import type { ParsedTable } from "./structured-parser";
 
+/**
+ * Compare two sets of parsed tables using a key column to match rows.
+ * keyColumnIndex: the column index to use as the row identifier (e.g., item name).
+ */
 export function compareTables(
   tables1: ParsedTable[],
-  tables2: ParsedTable[]
+  tables2: ParsedTable[],
+  keyColumnIndex: number = 0
 ): { headers: string[]; rows: ComparedRow[]; summary: ComparisonRecord["summary"] } {
-  // Merge all tables into unified rows with consistent headers
   const { headers: h1, rows: rows1 } = mergeTables(tables1);
   const { headers: h2, rows: rows2 } = mergeTables(tables2);
 
-  // Unify headers from both files
   const headers = unifyHeaders(h1, h2);
 
-  // Normalize rows to have same number of columns
   const norm1 = normalizeRows(rows1, h1, headers);
   const norm2 = normalizeRows(rows2, h2, headers);
 
-  // Match rows between files
-  const comparedRows = matchAndCompareRows(norm1, norm2, headers);
+  // Clamp key column index
+  const keyIdx = Math.min(keyColumnIndex, headers.length - 1);
 
-  // Calculate summary
+  const comparedRows = matchByKeyColumn(norm1, norm2, headers, keyIdx);
   const summary = calculateSummary(comparedRows);
 
   return { headers, rows: comparedRows, summary };
@@ -29,7 +31,6 @@ function mergeTables(tables: ParsedTable[]): { headers: string[]; rows: string[]
   if (tables.length === 0) return { headers: [], rows: [] };
   if (tables.length === 1) return { headers: tables[0].headers, rows: tables[0].rows };
 
-  // Use headers from the table with the most columns
   let bestHeaders = tables[0].headers;
   for (const t of tables) {
     if (t.headers.length > bestHeaders.length) bestHeaders = t.headers;
@@ -77,55 +78,115 @@ function normalizeRows(
   });
 }
 
-function matchAndCompareRows(
+/**
+ * Match rows by key column value.
+ * 1. Exact match on key column
+ * 2. Fuzzy match on key column for remaining unmatched rows
+ * 3. Leftover rows are "only in file 1" or "only in file 2"
+ */
+function matchByKeyColumn(
   rows1: string[][],
   rows2: string[][],
-  headers: string[]
+  headers: string[],
+  keyIdx: number
 ): ComparedRow[] {
   const results: ComparedRow[] = [];
   const matched2: Set<number> = new Set();
 
-  // For each row in file 1, find the best match in file 2
-  for (let i = 0; i < rows1.length; i++) {
-    let bestMatch = -1;
-    let bestScore = 0;
+  // Build a map of key values → row indices for file 2
+  const key2Map: Map<string, number[]> = new Map();
+  for (let j = 0; j < rows2.length; j++) {
+    const key = normalizeKey(rows2[j][keyIdx] ?? "");
+    if (!key) continue;
+    if (!key2Map.has(key)) key2Map.set(key, []);
+    key2Map.get(key)!.push(j);
+  }
 
-    for (let j = 0; j < rows2.length; j++) {
+  // Pass 1: Exact match on key column
+  const unmatched1: number[] = [];
+  for (let i = 0; i < rows1.length; i++) {
+    const key = normalizeKey(rows1[i][keyIdx] ?? "");
+    if (!key) {
+      unmatched1.push(i);
+      continue;
+    }
+
+    const candidates = key2Map.get(key);
+    if (candidates && candidates.length > 0) {
+      // Find best candidate (not yet matched)
+      const j = candidates.find((c) => !matched2.has(c));
+      if (j !== undefined) {
+        matched2.add(j);
+        const cells = buildCells(headers, rows1[i], rows2[j]);
+        const allSame = cells.every((c) => !c.changed);
+        results.push({
+          status: allSame ? "identical" : "modified",
+          rowIndex: i + 1,
+          cells,
+        });
+        continue;
+      }
+    }
+    unmatched1.push(i);
+  }
+
+  // Pass 2: Fuzzy match remaining unmatched rows by key similarity
+  const unmatched2: number[] = [];
+  for (let j = 0; j < rows2.length; j++) {
+    if (!matched2.has(j)) unmatched2.push(j);
+  }
+
+  const stillUnmatched1: number[] = [];
+  for (const i of unmatched1) {
+    const key1 = normalizeKey(rows1[i][keyIdx] ?? "");
+    if (!key1) {
+      stillUnmatched1.push(i);
+      continue;
+    }
+
+    let bestJ = -1;
+    let bestSim = 0;
+    for (const j of unmatched2) {
       if (matched2.has(j)) continue;
-      const score = rowSimilarity(rows1[i], rows2[j]);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = j;
+      const key2 = normalizeKey(rows2[j][keyIdx] ?? "");
+      if (!key2) continue;
+      const sim = stringSimilarity(key1, key2);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestJ = j;
       }
     }
 
-    // Threshold: at least 30% similarity to consider a match
-    if (bestMatch >= 0 && bestScore >= 0.3) {
-      matched2.add(bestMatch);
-      const cells = buildCells(headers, rows1[i], rows2[bestMatch]);
+    // Require at least 60% similarity on the key to fuzzy-match
+    if (bestJ >= 0 && bestSim >= 0.6) {
+      matched2.add(bestJ);
+      const cells = buildCells(headers, rows1[i], rows2[bestJ]);
       const allSame = cells.every((c) => !c.changed);
-
       results.push({
         status: allSame ? "identical" : "modified",
         rowIndex: i + 1,
         cells,
       });
     } else {
-      // Row only in file 1
-      results.push({
-        status: "removed",
-        rowIndex: i + 1,
-        cells: headers.map((h, idx) => ({
-          header: h,
-          value1: rows1[i][idx] ?? "",
-          value2: undefined,
-          changed: true,
-        })),
-      });
+      stillUnmatched1.push(i);
     }
   }
 
-  // Remaining unmatched rows from file 2
+  // Remaining unmatched from file 1 → "only in file 1"
+  for (const i of stillUnmatched1) {
+    results.push({
+      status: "removed",
+      rowIndex: i + 1,
+      cells: headers.map((h, idx) => ({
+        header: h,
+        value1: rows1[i][idx] ?? "",
+        value2: undefined,
+        changed: true,
+      })),
+    });
+  }
+
+  // Remaining unmatched from file 2 → "only in file 2"
   for (let j = 0; j < rows2.length; j++) {
     if (matched2.has(j)) continue;
     results.push({
@@ -147,22 +208,24 @@ function matchAndCompareRows(
   return results;
 }
 
-function rowSimilarity(row1: string[], row2: string[]): number {
-  const maxLen = Math.max(row1.length, row2.length);
-  if (maxLen === 0) return 1;
+function normalizeKey(val: string): string {
+  return val.trim().toLowerCase().replace(/\s+/g, " ");
+}
 
-  let matches = 0;
-  for (let i = 0; i < maxLen; i++) {
-    const v1 = (row1[i] ?? "").trim().toLowerCase();
-    const v2 = (row2[i] ?? "").trim().toLowerCase();
-    if (v1 === v2) {
-      matches++;
-    } else if (v1 && v2 && (v1.includes(v2) || v2.includes(v1))) {
-      matches += 0.5;
-    }
+// Simple string similarity (Dice coefficient on bigrams)
+function stringSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+
+  const bigramsA = new Set<string>();
+  for (let i = 0; i < a.length - 1; i++) bigramsA.add(a.slice(i, i + 2));
+
+  let intersection = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    if (bigramsA.has(b.slice(i, i + 2))) intersection++;
   }
 
-  return matches / maxLen;
+  return (2 * intersection) / (a.length - 1 + b.length - 1);
 }
 
 function buildCells(headers: string[], row1: string[], row2: string[]): ComparedCell[] {
