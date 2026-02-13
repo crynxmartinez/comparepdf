@@ -161,27 +161,47 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   const headers = headerGroups.map((g) => g.text.trim());
   const colBoundaries = headerGroups.map((g) => g.x);
 
-  // Build a fingerprint of the header line to detect repeats on other pages
-  const headerFingerprint = page1Lines[headerLineIdx].text.toLowerCase().replace(/\s+/g, " ").trim();
+  // Build a set of header text strings to detect repeated headers on other pages.
+  // We match at the TEXT ITEM level (not line level) because repeated headers
+  // can end up on the same Y coordinate as data items and get merged into one line.
+  const headerTextSet = new Set<string>();
+  // Collect all text items from the header line AND lines above it (the header block)
+  for (let h = Math.max(0, headerLineIdx - 3); h <= headerLineIdx; h++) {
+    if (!page1Lines[h]) continue;
+    for (const item of page1Lines[h].items) {
+      const t = item.text.trim().toLowerCase();
+      if (t.length > 1) headerTextSet.add(t);
+    }
+  }
+  // Also add common page header items (phone numbers, company names that repeat)
+  // by collecting all text from lines BEFORE the header block on page 1
+  for (let h = 0; h < Math.max(0, headerLineIdx - 3); h++) {
+    if (!page1Lines[h]) continue;
+    for (const item of page1Lines[h].items) {
+      const t = item.text.trim().toLowerCase();
+      if (t.length > 1) headerTextSet.add(t);
+    }
+  }
 
-  // Step 3: Collect data rows from all pages, skipping repeated headers
+  // Step 3: Collect data rows from all pages
+  // For pages 2+, strip text items that match the header/page-header text
   const dataRows: string[][] = [];
 
   for (let p = 0; p < pageItemSets.length; p++) {
-    const lines = p === 0 ? page1Lines : buildLines(pageItemSets[p]);
+    let pageItems = pageItemSets[p];
+
+    if (p > 0) {
+      // Remove text items that match header text from page 1
+      pageItems = pageItems.filter((item) => {
+        const t = item.text.trim().toLowerCase();
+        return !headerTextSet.has(t);
+      });
+    }
+
+    const lines = p === 0 ? page1Lines : buildLines(pageItems);
     const startIdx = p === 0 ? headerLineIdx + 1 : 0;
 
     for (let i = startIdx; i < lines.length; i++) {
-      // Check if this line is a repeated header (or part of the header block)
-      const lineFingerprint = lines[i].text.toLowerCase().replace(/\s+/g, " ").trim();
-
-      // Skip if it matches the header fingerprint (exact or high similarity)
-      if (isRepeatedHeader(lineFingerprint, headerFingerprint)) continue;
-
-      // Skip lines that look like page headers/footers (phone numbers, company info, etc.)
-      // These typically appear before the first data row on each page
-      if (p > 0 && i < 5 && looksLikePageHeader(lineFingerprint, HEADER_KEYWORDS)) continue;
-
       const row = assignToColumns(lines[i].items, colBoundaries);
       if (row.some((c) => c.trim())) {
         dataRows.push(row);
@@ -199,30 +219,6 @@ async function parsePdfToTables(file: File): Promise<ParsedTable[]> {
   const { headers: finalHeaders, rows: finalRows } = extractSubFields(headers, mergedRows);
 
   return [{ section: "All Pages", headers: finalHeaders, rows: finalRows }];
-}
-
-// Check if a line is a repeated header row
-function isRepeatedHeader(lineText: string, headerFingerprint: string): boolean {
-  if (lineText === headerFingerprint) return true;
-
-  // Check if the line contains most of the header keywords
-  const headerWords = headerFingerprint.split(" ").filter((w) => w.length > 2);
-  if (headerWords.length === 0) return false;
-  const matchCount = headerWords.filter((w) => lineText.includes(w)).length;
-  return matchCount / headerWords.length >= 0.6;
-}
-
-// Check if a line looks like a page header/footer (company info, phone, address, etc.)
-function looksLikePageHeader(lineText: string, headerKeywords: string[]): boolean {
-  // Contains phone number pattern
-  if (/\(\d{3}\)\s*\d{3}[- ]\d{4}/.test(lineText)) return true;
-  // Contains many header keywords (it's a repeated table header)
-  const words = lineText.split(/\s+/);
-  const kwCount = words.filter((w) => headerKeywords.some((k) => w.includes(k))).length;
-  if (kwCount >= 3) return true;
-  // Very short lines at top of page are likely headers/footers
-  if (lineText.length < 10) return true;
-  return false;
 }
 
 // Find the column that contains sequential line numbers (1, 2, 3...)
