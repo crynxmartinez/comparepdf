@@ -39,9 +39,12 @@ export function exportAsHtml(record: ComparisonRecord): string {
   if (modified.length > 0) {
     const fileHeaders = labels.map((l) => `<th class="cell">${esc(l)}</th>`).join("");
     let tbody = "";
+    let lastKey = "";
     for (const row of modified) {
       const changedCells = getChangedCells(row);
       const matchCount = row.cells.length - changedCells.length;
+      const isNewItem = row.keyValue !== lastKey;
+      lastKey = row.keyValue;
       for (let ci = 0; ci < changedCells.length; ci++) {
         const cell = changedCells[ci];
         const valueCells = cell.values.map((v) => {
@@ -49,9 +52,9 @@ export function exportAsHtml(record: ComparisonRecord): string {
           return `<td class="cell val${isDiff ? " diff" : ""}">${esc(v ?? "—")}</td>`;
         }).join("");
         const itemCell = ci === 0
-          ? `<td class="cell item" rowspan="${changedCells.length + (matchCount > 0 ? 1 : 0)}"><strong>${esc(row.keyValue)}</strong></td>`
+          ? `<td class="cell item" rowspan="${changedCells.length + (matchCount > 0 ? 1 : 0)}">${isNewItem ? `<strong>${esc(row.keyValue)}</strong>` : ""}</td>`
           : "";
-        tbody += `<tr${ci === 0 ? ' class="border-top"' : ""}>${itemCell}<td class="cell field">${esc(cell.header)}</td>${valueCells}</tr>`;
+        tbody += `<tr${ci === 0 && isNewItem ? ' class="border-top"' : ""}>${itemCell}<td class="cell field">${esc(cell.header)}</td>${valueCells}</tr>`;
       }
       if (matchCount > 0) {
         tbody += `<tr class="match-row"><td class="cell match-info" colspan="${labels.length + 1}">${matchCount} matching field${matchCount !== 1 ? "s" : ""}</td></tr>`;
@@ -235,11 +238,16 @@ export function downloadCsv(record: ComparisonRecord) {
   if (modified.length > 0) {
     csvLines.push(`"--- DISCREPANCIES (${modified.length} items) ---"`);
     csvLines.push(["Item", "Field", ...labels].map((h) => `"${escapeCsv(h)}"`).join(","));
+    let csvLastKey = "";
     for (const row of modified) {
       const changed = getChangedCells(row);
-      for (const cell of changed) {
+      const isNew = row.keyValue !== csvLastKey;
+      csvLastKey = row.keyValue;
+      for (let ci = 0; ci < changed.length; ci++) {
+        const cell = changed[ci];
         const vals = cell.values.map((v) => `"${escapeCsv(v ?? "")}"`);
-        csvLines.push(`"${escapeCsv(row.keyValue)}","${escapeCsv(cell.header)}",${vals.join(",")}`);
+        const itemCol = ci === 0 && isNew ? `"${escapeCsv(row.keyValue)}"` : `""`;
+        csvLines.push(`${itemCol},"${escapeCsv(cell.header)}",${vals.join(",")}`);
       }
     }
     csvLines.push("");
@@ -318,10 +326,15 @@ export async function downloadExcel(record: ComparisonRecord) {
   // Discrepancies sheet — Item | Field | File A | File B ...
   if (modified.length > 0) {
     const discData: (string | number)[][] = [["Item", "Field", ...labels]];
+    let xlLastKey = "";
     for (const row of modified) {
       const changed = getChangedCells(row);
-      for (const cell of changed) {
-        discData.push([row.keyValue, cell.header, ...cell.values.map((v) => v ?? "")]);
+      const isNew = row.keyValue !== xlLastKey;
+      xlLastKey = row.keyValue;
+      for (let ci = 0; ci < changed.length; ci++) {
+        const cell = changed[ci];
+        const itemCol = ci === 0 && isNew ? row.keyValue : "";
+        discData.push([itemCol, cell.header, ...cell.values.map((v) => v ?? "")]);
       }
     }
     const discWs = XLSX.utils.aoa_to_sheet(discData);

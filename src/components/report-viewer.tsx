@@ -280,12 +280,14 @@ function DiscrepancyTable({ rows, labels }: { rows: ComparedRow[]; labels: strin
                 return vals.length > 1 && !vals.every((v) => v === vals[0]);
               });
               const matchCount = row.cells.length - changedCells.length;
+              const prevRow = rowIdx > 0 ? pageRows[rowIdx - 1] : null;
+              const isNewItem = !prevRow || row.keyValue !== prevRow.keyValue;
 
               return changedCells.map((cell, cellIdx) => (
-                <tr key={`${rowIdx}-${cellIdx}`} className={cn(cellIdx === 0 ? "border-t" : "", "hover:bg-muted/20")}>
+                <tr key={`${rowIdx}-${cellIdx}`} className={cn(cellIdx === 0 && isNewItem ? "border-t" : "", "hover:bg-muted/20")}>
                   {cellIdx === 0 && (
                     <td className="px-4 py-2 text-xs font-semibold align-top" rowSpan={changedCells.length + (matchCount > 0 ? 1 : 0)}>
-                      {row.keyValue}
+                      {isNewItem ? row.keyValue : ""}
                     </td>
                   )}
                   <td className="px-4 py-2 text-xs font-medium">{cell.header}</td>
