@@ -42,10 +42,18 @@ export default function HistoryPage() {
   const [selected, setSelected] = useState<ComparisonRecord | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const [error, setError] = useState<string | null>(null);
+
   const loadRecords = async () => {
     setLoading(true);
-    const data = await getComparisons();
-    setRecords(data);
+    setError(null);
+    try {
+      const data = await getComparisons();
+      setRecords(data);
+    } catch (e) {
+      console.error("Failed to load history:", e);
+      setError(String(e));
+    }
     setLoading(false);
   };
 
@@ -105,7 +113,13 @@ export default function HistoryPage() {
         )}
       </div>
 
-      {loading ? (
+      {error ? (
+        <Card className="flex flex-col items-center justify-center py-20 text-center">
+          <p className="text-sm font-medium text-destructive">Failed to load history</p>
+          <p className="text-xs text-muted-foreground mt-1">{error}</p>
+          <Button variant="outline" size="sm" className="mt-4" onClick={loadRecords}>Retry</Button>
+        </Card>
+      ) : loading ? (
         <div className="flex items-center justify-center py-20 text-sm text-muted-foreground">
           Loading history...
         </div>
