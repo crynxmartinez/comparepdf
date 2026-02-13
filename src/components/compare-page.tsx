@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import { FileUpload } from "@/components/file-upload";
-import { DiffViewer } from "@/components/diff-viewer";
+import { ReportViewer } from "@/components/report-viewer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, ArrowRightLeft, RotateCcw } from "lucide-react";
-import { extractText, getFileType } from "@/lib/parsers";
-import { compareLines, generateSummary, generateId } from "@/lib/differ";
+import { getFileType } from "@/lib/parsers";
+import { parseFileToTables } from "@/lib/structured-parser";
+import { compareTables, generateId } from "@/lib/structured-differ";
 import { saveComparison, type ComparisonRecord } from "@/lib/db";
 
 export function ComparePage() {
@@ -42,13 +43,12 @@ export function ComparePage() {
     setResult(null);
 
     try {
-      const [lines1, lines2] = await Promise.all([
-        extractText(file1),
-        extractText(file2),
+      const [tables1, tables2] = await Promise.all([
+        parseFileToTables(file1),
+        parseFileToTables(file2),
       ]);
 
-      const differences = compareLines(lines1, lines2);
-      const summary = generateSummary(differences);
+      const { headers, rows, summary } = compareTables(tables1, tables2);
 
       const record: ComparisonRecord = {
         id: generateId(),
@@ -56,8 +56,9 @@ export function ComparePage() {
         fileName2: file2.name,
         fileType: type1,
         date: new Date().toISOString(),
+        headers,
         summary,
-        differences,
+        rows,
       };
 
       await saveComparison(record);
@@ -170,7 +171,7 @@ export function ComparePage() {
               New Comparison
             </Button>
           </div>
-          <DiffViewer record={result} />
+          <ReportViewer record={result} />
         </>
       )}
     </div>

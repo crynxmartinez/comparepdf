@@ -1,27 +1,34 @@
 import { openDB, DBSchema } from "idb";
 
+export interface ComparedCell {
+  header: string;
+  value1?: string;
+  value2?: string;
+  changed: boolean;
+}
+
+export interface ComparedRow {
+  status: "identical" | "modified" | "added" | "removed";
+  rowIndex: number;
+  cells: ComparedCell[];
+}
+
 export interface ComparisonRecord {
   id: string;
   fileName1: string;
   fileName2: string;
   fileType: string;
   date: string;
+  headers: string[];
   summary: {
-    totalItems: number;
+    totalRows: number;
+    identical: number;
+    modified: number;
     added: number;
     removed: number;
-    modified: number;
-    unchanged: number;
+    matchScore: number;
   };
-  differences: DiffResult[];
-}
-
-export interface DiffResult {
-  type: "added" | "removed" | "modified" | "unchanged";
-  lineNumber?: number;
-  content1?: string;
-  content2?: string;
-  details?: string;
+  rows: ComparedRow[];
 }
 
 interface CompareDB extends DBSchema {

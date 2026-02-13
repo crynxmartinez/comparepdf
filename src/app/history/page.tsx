@@ -21,7 +21,7 @@ import {
   type ComparisonRecord,
 } from "@/lib/db";
 import { downloadReport, downloadCsv } from "@/lib/export";
-import { DiffViewer } from "@/components/diff-viewer";
+import { ReportViewer } from "@/components/report-viewer";
 
 function getTypeIcon(fileType: string) {
   switch (fileType) {
@@ -83,7 +83,7 @@ export default function HistoryPage() {
             Back to History
           </Button>
         </div>
-        <DiffViewer record={selected} />
+        <ReportViewer record={selected} />
       </div>
     );
   }
@@ -138,6 +138,12 @@ export default function HistoryPage() {
                       <span className="text-xs text-muted-foreground">
                         {new Date(record.date).toLocaleDateString()}{" "}
                         {new Date(record.date).toLocaleTimeString()}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {record.summary.matchScore}% match
+                      </span>
+                      <span className="text-xs text-amber-600">
+                        ~{record.summary.modified}
                       </span>
                       <span className="text-xs text-green-600">
                         +{record.summary.added}
