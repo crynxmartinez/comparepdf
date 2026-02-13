@@ -119,28 +119,36 @@ export function exportAsHtml(record: ComparisonRecord): string {
 </html>`;
 }
 
-export async function downloadPdf(record: ComparisonRecord) {
+export function downloadPdf(record: ComparisonRecord) {
   const html = exportAsHtml(record);
-  // Dynamic import to avoid SSR issues
-  const html2pdf = (await import("html2pdf.js")).default;
-  const container = document.createElement("div");
-  container.innerHTML = html;
-  document.body.appendChild(container);
+  // Use an iframe + window.print() to avoid html2canvas "lab" color issues
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.left = "-9999px";
+  iframe.style.width = "1200px";
+  iframe.style.height = "800px";
+  document.body.appendChild(iframe);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (html2pdf() as any)
-    .set({
-      margin: [10, 10, 10, 10],
-      filename: `comparison-report-${record.id}.pdf`,
-      image: { type: "jpeg", quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: "mm", format: "a4", orientation: "landscape" },
-      pagebreak: { mode: ["avoid-all", "css", "legacy"] },
-    })
-    .from(container)
-    .save();
+  const doc = iframe.contentDocument ?? iframe.contentWindow?.document;
+  if (!doc) {
+    document.body.removeChild(iframe);
+    return;
+  }
 
-  document.body.removeChild(container);
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  // Wait for content to render, then trigger print (Save as PDF)
+  iframe.onload = () => {
+    setTimeout(() => {
+      iframe.contentWindow?.print();
+      // Clean up after print dialog closes
+      setTimeout(() => {
+        document.body.removeChild(iframe);
+      }, 1000);
+    }, 500);
+  };
 }
 
 export function downloadReport(record: ComparisonRecord) {
