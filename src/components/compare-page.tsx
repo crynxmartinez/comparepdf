@@ -3,17 +3,18 @@
 import { useState } from "react";
 import { FileUpload } from "@/components/file-upload";
 import { ReportViewer } from "@/components/report-viewer";
+import { ColumnMapper, type ColumnMapping } from "@/components/column-mapper";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Loader2, ArrowRightLeft, RotateCcw, Plus, X } from "lucide-react";
 import { getFileType } from "@/lib/parsers";
-import { parseFileToTables } from "@/lib/structured-parser";
-import { compareMultiFiles, generateId } from "@/lib/structured-differ";
+import { parseFileToTables, type ParsedTable } from "@/lib/structured-parser";
+import { compareMultiFiles, compareMappedFiles, generateId } from "@/lib/structured-differ";
 import { saveComparison, type ComparisonRecord } from "@/lib/db";
 
-type Step = "upload" | "result";
+type Step = "upload" | "mapping" | "result";
 
 interface FileSlot {
   file: File | null;
@@ -28,8 +29,14 @@ function autoDetectKeyColumn(headers: string[]): { index: number; name: string }
       return { index: i, name: headers[i] };
     }
   }
-  // Fallback: use first non-empty-looking column
   return { index: 0, name: headers[0] ?? "Column 1" };
+}
+
+function headersMatch(headersA: string[], headersB: string[]): boolean {
+  if (headersA.length !== headersB.length) return false;
+  const normA = headersA.map((h) => h.toLowerCase().trim()).sort();
+  const normB = headersB.map((h) => h.toLowerCase().trim()).sort();
+  return normA.every((h, i) => h === normB[i]);
 }
 
 export function ComparePage() {
@@ -41,6 +48,12 @@ export function ComparePage() {
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("upload");
   const [result, setResult] = useState<ComparisonRecord | null>(null);
+
+  // Mapping step state
+  const [parsedTables, setParsedTables] = useState<ParsedTable[][] | null>(null);
+  const [parsedLabels, setParsedLabels] = useState<string[]>([]);
+  const [parsedFileNames, setParsedFileNames] = useState<string[]>([]);
+  const [parsedFileType, setParsedFileType] = useState<string>("unknown");
 
   const filledSlots = fileSlots.filter((s) => s.file !== null);
   const canCompare = filledSlots.length >= 2 && !loading;
@@ -68,7 +81,6 @@ export function ComparePage() {
     setFileSlots(updated);
   };
 
-  // Upload → Parse → Auto-detect key → Compare → Results (all in one step)
   const handleCompare = async () => {
     const files = fileSlots.filter((s) => s.file !== null);
     if (files.length < 2) return;
@@ -82,22 +94,72 @@ export function ComparePage() {
         files.map((s) => parseFileToTables(s.file!))
       );
 
-      // Auto-detect key column from first file's headers
-      const headers = allTables[0]?.[0]?.headers ?? [];
-      const keyCol = autoDetectKeyColumn(headers);
-
-      // Run comparison
       const fileType = getFileType(files[0].file!.name) ?? "unknown";
-      const { headers: resultHeaders, rows, summary } = compareMultiFiles(allTables, keyCol.index);
+      const fileNames = files.map((s) => s.file!.name);
+      const labels = files.map((s) => s.label);
+
+      // Check if headers match across all files
+      const allHeaders = allTables.map((t) => t[0]?.headers ?? []);
+      const allMatch = allHeaders.every((h) => headersMatch(h, allHeaders[0]));
+
+      if (allMatch) {
+        // Headers match — auto-compare as before
+        const keyCol = autoDetectKeyColumn(allHeaders[0]);
+        const { headers: resultHeaders, rows, summary } = compareMultiFiles(allTables, keyCol.index);
+
+        const record: ComparisonRecord = {
+          id: generateId(),
+          fileNames,
+          fileLabels: labels,
+          fileType,
+          date: new Date().toISOString(),
+          headers: resultHeaders,
+          keyColumn: keyCol.name,
+          summary,
+          rows,
+        };
+
+        await saveComparison(record);
+        setResult(record);
+        setStep("result");
+      } else {
+        // Headers don't match — show mapping UI
+        setParsedTables(allTables);
+        setParsedLabels(labels);
+        setParsedFileNames(fileNames);
+        setParsedFileType(fileType);
+        setStep("mapping");
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "An error occurred during comparison."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMappingConfirm = async (mapping: ColumnMapping) => {
+    if (!parsedTables || parsedTables.length < 2) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const { headers: resultHeaders, rows, summary } = compareMappedFiles(
+        parsedTables[0],
+        parsedTables[1],
+        mapping
+      );
 
       const record: ComparisonRecord = {
         id: generateId(),
-        fileNames: files.map((s) => s.file!.name),
-        fileLabels: files.map((s) => s.label),
-        fileType,
+        fileNames: parsedFileNames,
+        fileLabels: parsedLabels,
+        fileType: parsedFileType,
         date: new Date().toISOString(),
         headers: resultHeaders,
-        keyColumn: keyCol.name,
+        keyColumn: resultHeaders[0] ?? "Key",
         summary,
         rows,
       };
@@ -107,7 +169,7 @@ export function ComparePage() {
       setStep("result");
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "An error occurred during comparison."
+        err instanceof Error ? err.message : "An error occurred during mapped comparison."
       );
     } finally {
       setLoading(false);
@@ -120,6 +182,7 @@ export function ComparePage() {
       { file: null, label: "File B" },
     ]);
     setResult(null);
+    setParsedTables(null);
     setError(null);
     setStep("upload");
   };
@@ -131,6 +194,7 @@ export function ComparePage() {
         <h1 className="text-2xl font-bold tracking-tight">New Comparison</h1>
         <p className="text-sm text-muted-foreground">
           {step === "upload" && "Upload 2 or more files to compare"}
+          {step === "mapping" && "Map columns between files with different headers"}
           {step === "result" && "Comparison results"}
         </p>
       </div>
@@ -194,7 +258,7 @@ export function ComparePage() {
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Parsing & comparing {filledSlots.length} files...
+                  Parsing {filledSlots.length} files...
                 </>
               ) : (
                 <>
@@ -207,14 +271,38 @@ export function ComparePage() {
         </>
       )}
 
+      {/* ─── Column Mapping ─── */}
+      {step === "mapping" && parsedTables && parsedTables.length >= 2 && (
+        <>
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
+              {error}
+            </div>
+          )}
+          <ColumnMapper
+            headersA={parsedTables[0][0]?.headers ?? []}
+            headersB={parsedTables[1][0]?.headers ?? []}
+            labelA={parsedLabels[0] ?? "File A"}
+            labelB={parsedLabels[1] ?? "File B"}
+            onConfirm={handleMappingConfirm}
+            onCancel={handleReset}
+          />
+          {loading && (
+            <div className="flex justify-center">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+        </>
+      )}
+
       {/* ─── Results ─── */}
       {step === "result" && result && (
         <>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge>{result.fileType.toUpperCase()}</Badge>
+              <Badge>{(result.fileType ?? "unknown").toUpperCase()}</Badge>
               <span className="text-sm text-muted-foreground">
-                {result.fileNames.join(" vs ")}
+                {(result.fileNames ?? []).join(" vs ")}
               </span>
               <Badge variant="outline" className="text-xs">
                 Key: {result.keyColumn}

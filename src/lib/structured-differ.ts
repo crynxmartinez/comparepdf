@@ -137,6 +137,131 @@ export function compareMultiFiles(
   return { headers, rows: results, summary };
 }
 
+/**
+ * Compare 2 files using explicit column mapping (for files with different headers).
+ * mapping.keyA / keyB = which column in each file is the match key
+ * mapping.pairs = which columns to compare: [fileA_col, fileB_col]
+ */
+export function compareMappedFiles(
+  tablesA: ParsedTable[],
+  tablesB: ParsedTable[],
+  mapping: { keyA: number; keyB: number; pairs: [number, number][] }
+): { headers: string[]; rows: ComparedRow[]; summary: ComparisonRecord["summary"] } {
+  const fileA = mergeTables(tablesA);
+  const fileB = mergeTables(tablesB);
+
+  // The output headers are: the key column name + each mapped pair's File A header
+  const keyHeader = fileA.headers[mapping.keyA] ?? "Key";
+  const comparedHeaders = mapping.pairs.map(([aIdx]) => fileA.headers[aIdx] ?? `Col ${aIdx}`);
+  const headers = [keyHeader, ...comparedHeaders];
+
+  // Build key → row index maps
+  const keyMapA = new Map<string, number>();
+  for (let i = 0; i < fileA.rows.length; i++) {
+    const key = normalizeKey(fileA.rows[i][mapping.keyA] ?? "");
+    if (key && !keyMapA.has(key)) keyMapA.set(key, i);
+  }
+
+  const keyMapB = new Map<string, number>();
+  for (let i = 0; i < fileB.rows.length; i++) {
+    const key = normalizeKey(fileB.rows[i][mapping.keyB] ?? "");
+    if (key && !keyMapB.has(key)) keyMapB.set(key, i);
+  }
+
+  // Collect all unique keys
+  const allKeys: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keyMapA.keys()) { if (!seen.has(key)) { seen.add(key); allKeys.push(key); } }
+  for (const key of keyMapB.keys()) { if (!seen.has(key)) { seen.add(key); allKeys.push(key); } }
+
+  // Fuzzy match keys that only appear in one file
+  const fuzzyMatched = new Map<string, string>();
+  for (const key of allKeys) {
+    const inA = keyMapA.has(key);
+    const inB = keyMapB.has(key);
+    if (inA !== inB) {
+      let bestMatch = "";
+      let bestSim = 0;
+      for (const other of allKeys) {
+        if (other === key) continue;
+        const otherInA = keyMapA.has(other);
+        const otherInB = keyMapB.has(other);
+        if (otherInA === inA && otherInB === inB) continue;
+        const sim = stringSimilarity(key, other);
+        if (sim > bestSim && sim >= 0.6) { bestSim = sim; bestMatch = other; }
+      }
+      if (bestMatch) fuzzyMatched.set(key, bestMatch);
+    }
+  }
+
+  const results: ComparedRow[] = [];
+  const processed = new Set<string>();
+
+  for (const key of allKeys) {
+    if (processed.has(key)) continue;
+    const resolved = fuzzyMatched.get(key) ?? key;
+    if (processed.has(resolved) && resolved !== key) continue;
+
+    const related = [resolved];
+    for (const [k, v] of fuzzyMatched) {
+      if (v === resolved && k !== resolved) related.push(k);
+    }
+
+    let rowA: string[] | null = null;
+    let rowB: string[] | null = null;
+    for (const rk of related) {
+      if (!rowA && keyMapA.has(rk)) rowA = fileA.rows[keyMapA.get(rk)!];
+      if (!rowB && keyMapB.has(rk)) rowB = fileB.rows[keyMapB.get(rk)!];
+    }
+
+    const presentIn: number[] = [];
+    const missingFrom: number[] = [];
+    if (rowA) presentIn.push(0); else missingFrom.push(0);
+    if (rowB) presentIn.push(1); else missingFrom.push(1);
+
+    // Build cells: key column + each mapped pair
+    const cells: ComparedCell[] = [];
+
+    // Key column cell
+    const keyValA = rowA ? (rowA[mapping.keyA] ?? "").trim() : undefined;
+    const keyValB = rowB ? (rowB[mapping.keyB] ?? "").trim() : undefined;
+    cells.push({ header: keyHeader, values: [keyValA, keyValB], changed: false });
+
+    // Mapped comparison columns
+    for (const [aIdx, bIdx] of mapping.pairs) {
+      const valA = rowA ? (rowA[aIdx] ?? "").trim() : undefined;
+      const valB = rowB ? (rowB[bIdx] ?? "").trim() : undefined;
+      const nonEmpty = [valA, valB].filter((v) => v !== undefined) as string[];
+      const allSame = nonEmpty.length > 0 && nonEmpty.every((v) => v === nonEmpty[0]);
+      cells.push({
+        header: fileA.headers[aIdx] ?? `Col ${aIdx}`,
+        values: [valA, valB],
+        changed: !allSame || missingFrom.length > 0,
+      });
+    }
+
+    let status: ComparedRow["status"];
+    if (missingFrom.length > 0) {
+      status = "missing";
+    } else {
+      const hasChanges = cells.some((c) => {
+        const vals = c.values.filter((v) => v !== undefined) as string[];
+        return vals.length > 1 && !vals.every((v) => v === vals[0]);
+      });
+      status = hasChanges ? "modified" : "identical";
+    }
+
+    results.push({ status, keyValue: resolved, presentIn, missingFrom, cells });
+    for (const rk of related) processed.add(rk);
+  }
+
+  const order = { missing: 0, modified: 1, identical: 2 };
+  results.sort((a, b) => order[a.status] - order[b.status]);
+
+  const summary = calculateSummary(results, 2);
+  return { headers, rows: results, summary };
+}
+
 // Legacy 2-file wrapper
 export function compareTables(
   tables1: ParsedTable[],
