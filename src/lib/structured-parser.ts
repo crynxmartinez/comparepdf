@@ -416,33 +416,41 @@ async function parseExcelToTables(file: File): Promise<ParsedTable[]> {
     if (data.length === 0) continue;
 
     // Find the actual header row by scoring each row for header-like keywords
+    // The best header row is the one with the MOST individual cells matching keywords
+    // AND having many filled columns (real headers have 5+ columns, title rows have 1-3)
     let headerRowIdx = 0;
-    let bestScore = 0;
+    let bestScore = -1;
 
-    for (let i = 0; i < Math.min(data.length, 20); i++) {
+    for (let i = 0; i < Math.min(data.length, 30); i++) {
       const row = data[i] as string[];
       if (!row || row.length === 0) continue;
 
       const cells = row.map((c) => String(c ?? "").trim()).filter(Boolean);
-      if (cells.length < 2) continue; // Header rows should have multiple columns
+      // Real header rows have many columns — skip rows with fewer than 3 filled cells
+      if (cells.length < 3) continue;
 
-      // Score: how many cells contain header keywords
-      let score = 0;
+      // Count how many cells individually match a header keyword
+      let keywordHits = 0;
       for (const cell of cells) {
-        const words = cell.toLowerCase().split(/\s+/);
-        if (words.some((w) => HEADER_KEYWORDS.some((k) => w.includes(k)))) {
-          score++;
+        const words = cell.toLowerCase().split(/[\s/&,]+/);
+        if (words.some((w) => HEADER_KEYWORDS.some((k) => w === k || w.includes(k)))) {
+          keywordHits++;
         }
       }
 
-      // Bonus: prefer rows where most cells are short text (not long sentences/addresses)
-      const shortCells = cells.filter((c) => c.length < 30);
-      const shortRatio = shortCells.length / cells.length;
-      score *= shortRatio;
+      // The ratio of keyword-matching cells out of all filled cells
+      const hitRatio = keywordHits / cells.length;
 
-      // Bonus: more filled cells = more likely a header row
-      const fillRatio = cells.length / row.length;
-      score *= (1 + fillRatio);
+      // Score = raw keyword hits, but only if a meaningful portion matches
+      // A real header like "QTY | NEW QTY | MARK | DESCRIPTION | ..." has high hits AND high ratio
+      // A title like "ORDER CONFIRMATION & ACKNOWLEDGEMENT" has maybe 1 hit but ratio is low with few cells
+      let score = keywordHits;
+
+      // Require at least 40% of cells to be keywords to count, otherwise score = 0
+      if (hitRatio < 0.4) score = 0;
+
+      // Tiebreaker: prefer rows with more filled cells (wider = more likely a real header)
+      score += cells.length * 0.01;
 
       if (score > bestScore) {
         bestScore = score;
