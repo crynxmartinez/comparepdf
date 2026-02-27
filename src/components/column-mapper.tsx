@@ -3,8 +3,7 @@
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ArrowRightLeft, Plus, X, Key, Columns } from "lucide-react";
+import { ArrowRightLeft, X, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface ColumnMapping {
@@ -33,195 +32,206 @@ export function ColumnMapper({
   onConfirm,
   onCancel,
 }: ColumnMapperProps) {
-  const [keyA, setKeyA] = useState<number | null>(null);
-  const [keyB, setKeyB] = useState<number | null>(null);
-  const [pairs, setPairs] = useState<[number, number][]>([]);
-  const [selectingPairA, setSelectingPairA] = useState<number | null>(null);
+  // mappings[bIdx] = aIdx or null (which File A header is mapped to this File B header)
+  const [mappings, setMappings] = useState<(number | null)[]>(
+    () => headersB.map(() => null)
+  );
+  // Which File B row is designated as the match key
+  const [keyRow, setKeyRow] = useState<number | null>(null);
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [dragOverB, setDragOverB] = useState<number | null>(null);
 
-  const usedA = new Set(pairs.map((p) => p[0]));
-  const usedB = new Set(pairs.map((p) => p[1]));
-  if (keyA !== null) usedA.add(keyA);
-  if (keyB !== null) usedB.add(keyB);
+  // Compute which File A indices are already used
+  const usedA = new Set<number>();
+  for (const aIdx of mappings) {
+    if (aIdx !== null) usedA.add(aIdx);
+  }
+
+  // Compute pairs (excluding the key row)
+  const pairs: [number, number][] = [];
+  let keyA: number | null = null;
+  let keyB: number | null = null;
+
+  for (let bIdx = 0; bIdx < headersB.length; bIdx++) {
+    const aIdx = mappings[bIdx];
+    if (aIdx === null) continue;
+    if (bIdx === keyRow) {
+      keyA = aIdx;
+      keyB = bIdx;
+    } else {
+      pairs.push([aIdx, bIdx]);
+    }
+  }
 
   const canConfirm = keyA !== null && keyB !== null && pairs.length > 0;
 
-  const addPair = (aIdx: number, bIdx: number) => {
-    setPairs([...pairs, [aIdx, bIdx]]);
-    setSelectingPairA(null);
+  const handleDragStart = (aIdx: number) => {
+    setDragging(aIdx);
   };
 
-  const removePair = (idx: number) => {
-    setPairs(pairs.filter((_, i) => i !== idx));
+  const handleDragOver = (e: React.DragEvent, bIdx: number) => {
+    e.preventDefault();
+    setDragOverB(bIdx);
+  };
+
+  const handleDrop = (bIdx: number) => {
+    if (dragging === null) return;
+    const updated = [...mappings];
+    // Remove dragging from any previous slot
+    for (let i = 0; i < updated.length; i++) {
+      if (updated[i] === dragging) updated[i] = null;
+    }
+    updated[bIdx] = dragging;
+    setMappings(updated);
+    setDragging(null);
+    setDragOverB(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragging(null);
+    setDragOverB(null);
+  };
+
+  const clearMapping = (bIdx: number) => {
+    const updated = [...mappings];
+    // If this was the key row, unset it
+    if (keyRow === bIdx) setKeyRow(null);
+    updated[bIdx] = null;
+    setMappings(updated);
   };
 
   return (
     <div className="flex flex-col gap-6">
       <Card className="p-6">
-        <h2 className="text-lg font-semibold mb-1">Column Mapping Required</h2>
-        <p className="text-sm text-muted-foreground mb-4">
-          The two files have different column headers. Map the columns that correspond to each other.
+        <h2 className="text-lg font-semibold mb-1">Column Mapping</h2>
+        <p className="text-sm text-muted-foreground mb-5">
+          Drag headers from <strong>{labelA}</strong> into the drop zones next to <strong>{labelB}</strong> headers to map them.
+          Then mark one row as the <strong>Match Key</strong>.
         </p>
 
-        {/* Step 1: Key Column Selection */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Key className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold">Step 1: Select Match Key</h3>
-            <span className="text-xs text-muted-foreground">(the column that identifies each item)</span>
+        <div className="grid grid-cols-[1fr_auto_1fr] gap-x-3 gap-y-0 items-start">
+          {/* ─── Column Headers ─── */}
+          <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pb-2 border-b">
+            {labelB} Headers
+          </div>
+          <div className="pb-2 border-b" />
+          <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pb-2 border-b">
+            Mapped {labelA} Header
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            {/* File A key */}
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-2">{labelA}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {headersA.map((h, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setKeyA(keyA === i ? null : i)}
-                    className={cn(
-                      "px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
-                      keyA === i
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-background hover:bg-muted border-border"
-                    )}
-                  >
-                    {h}
-                  </button>
-                ))}
-              </div>
-              {keyA !== null && (
-                <p className="text-xs text-primary mt-1.5">Key: <strong>{headersA[keyA]}</strong></p>
-              )}
-            </div>
+          {/* ─── Rows: one per File B header ─── */}
+          {headersB.map((hB, bIdx) => {
+            const mappedA = mappings[bIdx];
+            const isKey = keyRow === bIdx;
+            const isDropTarget = dragOverB === bIdx;
 
-            {/* File B key */}
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-2">{labelB}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {headersB.map((h, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setKeyB(keyB === i ? null : i)}
-                    className={cn(
-                      "px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
-                      keyB === i
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-background hover:bg-muted border-border"
-                    )}
-                  >
-                    {h}
-                  </button>
-                ))}
+            return (
+              <div key={bIdx} className="contents">
+                {/* File B header name */}
+                <div className={cn(
+                  "flex items-center gap-2 py-2.5 px-3 border-b min-h-[44px]",
+                  isKey && "bg-primary/5"
+                )}>
+                  <span className="text-sm font-medium">{hB}</span>
+                  {isKey && (
+                    <span className="text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">KEY</span>
+                  )}
+                </div>
+
+                {/* Arrow */}
+                <div className="flex items-center justify-center py-2.5 border-b min-h-[44px]">
+                  {mappedA !== null && (
+                    <ArrowRightLeft className="h-3.5 w-3.5 text-muted-foreground" />
+                  )}
+                </div>
+
+                {/* Drop zone for File A header */}
+                <div
+                  className={cn(
+                    "flex items-center gap-2 py-2.5 px-3 border-b min-h-[44px] rounded-r transition-colors",
+                    isKey && "bg-primary/5",
+                    mappedA === null && "border border-dashed border-muted-foreground/30",
+                    isDropTarget && dragging !== null && "bg-amber-50 border-amber-400 dark:bg-amber-900/20",
+                  )}
+                  onDragOver={(e) => handleDragOver(e, bIdx)}
+                  onDragLeave={() => setDragOverB(null)}
+                  onDrop={() => handleDrop(bIdx)}
+                >
+                  {mappedA !== null ? (
+                    <div className="flex items-center gap-2 flex-1">
+                      <span className="text-sm font-medium text-primary">{headersA[mappedA]}</span>
+                      <div className="ml-auto flex items-center gap-1">
+                        {!isKey && mappedA !== null && (
+                          <button
+                            onClick={() => {
+                              setKeyRow(bIdx);
+                            }}
+                            className="text-[10px] text-muted-foreground hover:text-primary border rounded px-1.5 py-0.5 transition-colors"
+                            title="Set as match key"
+                          >
+                            Set as Key
+                          </button>
+                        )}
+                        <button
+                          onClick={() => clearMapping(bIdx)}
+                          className="text-muted-foreground hover:text-destructive"
+                          title="Remove mapping"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="text-xs text-muted-foreground/50">
+                      Drop {labelA} header here
+                    </span>
+                  )}
+                </div>
               </div>
-              {keyB !== null && (
-                <p className="text-xs text-primary mt-1.5">Key: <strong>{headersB[keyB]}</strong></p>
-              )}
-            </div>
+            );
+          })}
+        </div>
+
+        {/* ─── Draggable File A headers ─── */}
+        <div className="mt-6 pt-4 border-t">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+            {labelA} Headers — drag to map
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {headersA.map((hA, aIdx) => {
+              const isUsed = usedA.has(aIdx);
+              const isDraggingThis = dragging === aIdx;
+              return (
+                <div
+                  key={aIdx}
+                  draggable={!isUsed}
+                  onDragStart={() => handleDragStart(aIdx)}
+                  onDragEnd={handleDragEnd}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border cursor-grab active:cursor-grabbing select-none transition-all",
+                    isUsed
+                      ? "opacity-30 cursor-default bg-muted border-border"
+                      : "bg-background hover:bg-muted border-border hover:border-primary/50 shadow-sm",
+                    isDraggingThis && "opacity-50 scale-95"
+                  )}
+                >
+                  {!isUsed && <GripVertical className="h-3.5 w-3.5 text-muted-foreground/50" />}
+                  {hA}
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* Step 2: Column Pairs */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Columns className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold">Step 2: Map Columns to Compare</h3>
-            <span className="text-xs text-muted-foreground">(select matching columns from each file)</span>
-          </div>
-
-          {/* Existing pairs */}
-          {pairs.length > 0 && (
-            <div className="space-y-2 mb-3">
-              {pairs.map(([aIdx, bIdx], i) => (
-                <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 border">
-                  <Badge variant="secondary" className="text-xs">{headersA[aIdx]}</Badge>
-                  <ArrowRightLeft className="h-3 w-3 text-muted-foreground shrink-0" />
-                  <Badge variant="secondary" className="text-xs">{headersB[bIdx]}</Badge>
-                  <button onClick={() => removePair(i)} className="ml-auto text-muted-foreground hover:text-destructive">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Add new pair */}
-          {selectingPairA === null ? (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs text-muted-foreground mb-2">Click a column from {labelA}:</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {headersA.map((h, i) => {
-                    const isUsed = usedA.has(i);
-                    return (
-                      <button
-                        key={i}
-                        disabled={isUsed}
-                        onClick={() => setSelectingPairA(i)}
-                        className={cn(
-                          "px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
-                          isUsed
-                            ? "opacity-30 cursor-not-allowed"
-                            : "bg-background hover:bg-amber-50 hover:border-amber-300 border-border"
-                        )}
-                      >
-                        {h}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground mb-2">Then its match from {labelB}</p>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs text-muted-foreground mb-2">Selected from {labelA}:</p>
-                <div className="flex items-center gap-2">
-                  <Badge className="text-xs">{headersA[selectingPairA]}</Badge>
-                  <button onClick={() => setSelectingPairA(null)} className="text-muted-foreground hover:text-destructive">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground mb-2">Now click its match from {labelB}:</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {headersB.map((h, i) => {
-                    const isUsed = usedB.has(i);
-                    return (
-                      <button
-                        key={i}
-                        disabled={isUsed}
-                        onClick={() => addPair(selectingPairA, i)}
-                        className={cn(
-                          "px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
-                          isUsed
-                            ? "opacity-30 cursor-not-allowed"
-                            : "bg-background hover:bg-amber-50 hover:border-amber-300 border-border"
-                        )}
-                      >
-                        {h}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Summary & Actions */}
-        <div className="flex items-center justify-between pt-4 border-t">
+        {/* ─── Summary & Actions ─── */}
+        <div className="flex items-center justify-between pt-4 mt-4 border-t">
           <div className="text-xs text-muted-foreground">
             {keyA !== null && keyB !== null ? (
-              <span>Key: <strong>{headersA[keyA]}</strong> ↔ <strong>{headersB[keyB]}</strong></span>
+              <span>Match Key: <strong>{headersA[keyA]}</strong> ↔ <strong>{headersB[keyB]}</strong></span>
             ) : (
-              <span>Select key columns first</span>
+              <span className="text-amber-600">Map at least one pair and set a Match Key</span>
             )}
-            {pairs.length > 0 && <span className="ml-3">{pairs.length} column{pairs.length !== 1 ? "s" : ""} mapped</span>}
+            {pairs.length > 0 && <span className="ml-3">· {pairs.length} column{pairs.length !== 1 ? "s" : ""} to compare</span>}
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>

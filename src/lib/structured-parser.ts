@@ -403,24 +403,68 @@ async function parseExcelToTables(file: File): Promise<ParsedTable[]> {
   const workbook = XLSX.read(arrayBuffer, { type: "array" });
   const tables: ParsedTable[] = [];
 
+  const HEADER_KEYWORDS = [
+    "line", "qty", "item", "description", "length", "weight", "price", "amount",
+    "unit", "total", "part", "mark", "quantity", "cost", "ship", "warehouse",
+    "sales", "order", "customer", "po", "terms", "id", "no", "color", "size",
+    "detail", "trim", "quan", "thick", "angle", "type", "remark", "new",
+  ];
+
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
     const data = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1 });
     if (data.length === 0) continue;
 
-    const firstRow = (data[0] as string[]).map((c, idx) =>
-      c ? String(c) : `Column ${idx + 1}`
-    );
-    const maxCols = Math.max(firstRow.length, ...data.map((r) => (r as string[]).length));
+    // Find the actual header row by scoring each row for header-like keywords
+    let headerRowIdx = 0;
+    let bestScore = 0;
 
-    const headers = firstRow;
+    for (let i = 0; i < Math.min(data.length, 20); i++) {
+      const row = data[i] as string[];
+      if (!row || row.length === 0) continue;
+
+      const cells = row.map((c) => String(c ?? "").trim()).filter(Boolean);
+      if (cells.length < 2) continue; // Header rows should have multiple columns
+
+      // Score: how many cells contain header keywords
+      let score = 0;
+      for (const cell of cells) {
+        const words = cell.toLowerCase().split(/\s+/);
+        if (words.some((w) => HEADER_KEYWORDS.some((k) => w.includes(k)))) {
+          score++;
+        }
+      }
+
+      // Bonus: prefer rows where most cells are short text (not long sentences/addresses)
+      const shortCells = cells.filter((c) => c.length < 30);
+      const shortRatio = shortCells.length / cells.length;
+      score *= shortRatio;
+
+      // Bonus: more filled cells = more likely a header row
+      const fillRatio = cells.length / row.length;
+      score *= (1 + fillRatio);
+
+      if (score > bestScore) {
+        bestScore = score;
+        headerRowIdx = i;
+      }
+    }
+
+    const headerRow = (data[headerRowIdx] as string[]).map((c, idx) =>
+      c ? String(c).trim() : `Column ${idx + 1}`
+    );
+    const maxCols = Math.max(headerRow.length, ...data.map((r) => (r as string[]).length));
+
+    const headers = headerRow;
     while (headers.length < maxCols) headers.push(`Column ${headers.length + 1}`);
 
-    const rows = data.slice(1).map((row) => {
-      const r = (row as string[]).map((cell) => String(cell ?? ""));
-      while (r.length < maxCols) r.push("");
-      return r;
-    });
+    const rows = data.slice(headerRowIdx + 1)
+      .map((row) => {
+        const r = (row as string[]).map((cell) => String(cell ?? ""));
+        while (r.length < maxCols) r.push("");
+        return r;
+      })
+      .filter((r) => r.some((c) => c.trim())); // skip blank rows
 
     tables.push({ section: sheetName, headers, rows });
   }
